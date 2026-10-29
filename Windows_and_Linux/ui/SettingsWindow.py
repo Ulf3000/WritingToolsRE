@@ -16,7 +16,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QHBoxLayout, QScrollArea
 
 from ui.AutostartManager import AutostartManager
-from ui.UIUtils import UIUtils
+from ui.UIUtils import NoWheelComboBox, UIUtils
 
 _ = lambda x: x
 
@@ -46,6 +46,9 @@ class SettingsWindow(QtWidgets.QWidget):
         self._model_details_label = None
         self._model_request_id = 0
         self.save_button = None
+        self.scroll_area = None
+        self.scroll_content = None
+        self.bottom_container = None
         self._model_signals = _ModelFetchSignals(self)
         self._model_signals.finished.connect(self._on_models_fetched)
         self._model_signals.failed.connect(self._on_model_fetch_failed)
@@ -202,14 +205,17 @@ class SettingsWindow(QtWidgets.QWidget):
             self._model_refresh_button = refresh_button
             self.current_provider_layout.addWidget(refresh_button)
 
-            self._model_status_label = QtWidgets.QLabel(
-                _("Fetch the provider's current model list before choosing a model.")
-            )
+            self._model_status_label = QtWidgets.QLabel("")
             self._model_status_label.setWordWrap(True)
             UIUtils.set_label_role(self._model_status_label, "muted")
+            # Only shown once there is something to report, so the form does
+            # not waste a line on a permanent hint.
+            self._model_status_label.setVisible(False)
             self.current_provider_layout.addWidget(self._model_status_label)
 
         layout.addLayout(self.current_provider_layout)
+        # Provider forms differ in length; keep the window snug but whole.
+        self._schedule_fit_height()
 
     # -- live model discovery ---------------------------------------------
 
@@ -399,83 +405,97 @@ class SettingsWindow(QtWidgets.QWidget):
         try:
             UIUtils.set_label_role(label, "error" if error else "success")
             label.setText(message)
+            label.setVisible(bool(message))
         except RuntimeError:
             pass
 
     def init_ui(self):
         """
-        Initialize the user interface for the settings window.
-        Now includes a scroll area for better handling of content on smaller screens.
+        Build a compact, logical settings form.
+
+        The content is sized to fit the window, so nothing normally needs
+        scrolling; the scroll area is only a safety net on very small screens
+        and never shows a scrollbar.
         """
         self.setWindowTitle(_('Settings'))
         if not isinstance(self.app.config, dict):
             self.app.config = {}
         # Compact desktop width, like a standard preferences window.
-        self.setMinimumWidth(560)
-        self.setFixedWidth(560)  # non-resizable width keeps forms aligned
+        self.setFixedWidth(560)
 
-        # Set up the main window layout with spacing for bottom elements
         UIUtils.setup_window_and_layout(self)
         main_layout = QtWidgets.QVBoxLayout(self.background)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(8)  # spacing between scroll area and buttons
+        main_layout.setSpacing(0)
 
-        # Earlier scroll_area and scroll_content creation moved up
-        # Create scroll area
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
-        scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        # Let the window background show through; the scrollbar itself is
-        # styled globally in UIUtils.
+        scroll_area.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        scroll_area.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        # Let the window background show through.
         scroll_area.setStyleSheet(
             "QScrollArea { background: transparent; border: none; }"
             "QScrollArea > QWidget { background: transparent; }"
             "QScrollArea > QWidget > QWidget { background: transparent; }"
         )
         scroll_area.viewport().setAutoFillBackground(False)
+        self.scroll_area = scroll_area
 
-        # Create a widget to hold the scrollable content
         scroll_content = QtWidgets.QWidget()
         content_layout = QtWidgets.QVBoxLayout(scroll_content)
-        content_layout.setContentsMargins(24, 22, 24, 18)
-        content_layout.setSpacing(12)
+        content_layout.setContentsMargins(20, 14, 20, 6)
+        content_layout.setSpacing(8)
+        self.scroll_content = scroll_content
+
+        # Shared label column so the general rows line up.
+        label_width = 78
 
         if not self.providers_only:
             title_label = QtWidgets.QLabel(_("Settings"))
             UIUtils.set_label_role(title_label, "title")
-            content_layout.addWidget(title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+            content_layout.addWidget(
+                title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter
+            )
 
-            # Add autostart checkbox for Windows compiled version
+            # General options on one row: start-on-boot (Windows build only)
+            # and the shortcut field side by side.
+            general_row = QHBoxLayout()
+            general_row.setSpacing(10)
             if AutostartManager.get_startup_path():
                 self.autostart_checkbox = QtWidgets.QCheckBox(_("Start on Boot"))
-                self.autostart_checkbox.setChecked(AutostartManager.check_autostart())
-                self.autostart_checkbox.stateChanged.connect(self.toggle_autostart)
-                content_layout.addWidget(self.autostart_checkbox)
-
-            # Add shortcut key input
-            shortcut_label = QtWidgets.QLabel(_("Shortcut Key:"))
+                self.autostart_checkbox.setChecked(
+                    AutostartManager.check_autostart()
+                )
+                self.autostart_checkbox.stateChanged.connect(
+                    self.toggle_autostart
+                )
+                general_row.addWidget(self.autostart_checkbox)
+            general_row.addStretch(1)
+            shortcut_label = QtWidgets.QLabel(_("Shortcut"))
             UIUtils.set_label_role(shortcut_label, "section")
-            content_layout.addWidget(shortcut_label)
-
-            self.shortcut_input = QtWidgets.QLineEdit(self.app.config.get('shortcut', 'ctrl+space'))
-            content_layout.addWidget(self.shortcut_input)
-
-            # UI scale. Qt reads QT_SCALE_FACTOR once at startup, so a change
-            # here is stored now and applied by the next launch (Save offers
-            # to relaunch immediately).
-            scale_header = QHBoxLayout()
-            scale_label = QtWidgets.QLabel(_("UI Scale:"))
-            UIUtils.set_label_role(scale_label, "section")
-            self.ui_scale_value_label = QtWidgets.QLabel("")
-            self.ui_scale_value_label.setStyleSheet(
-                f"font-size: 13px; font-weight: 600; "
-                f"color: {UIUtils.palette()['accent']};"
+            general_row.addWidget(shortcut_label)
+            self.shortcut_input = QtWidgets.QLineEdit(
+                self.app.config.get('shortcut', 'ctrl+space')
             )
-            scale_header.addWidget(scale_label)
-            scale_header.addStretch()
-            scale_header.addWidget(self.ui_scale_value_label)
-            content_layout.addLayout(scale_header)
+            self.shortcut_input.setFixedWidth(170)
+            general_row.addWidget(self.shortcut_input)
+            content_layout.addLayout(general_row)
+
+            # UI scale: label, slider and live percentage in a single row.
+            # Qt reads QT_SCALE_FACTOR once at startup, so the change is
+            # stored now and applied on the next launch (Save offers to
+            # relaunch immediately).
+            scale_row = QHBoxLayout()
+            scale_row.setSpacing(10)
+            scale_label = QtWidgets.QLabel(_("UI Scale"))
+            UIUtils.set_label_role(scale_label, "section")
+            scale_label.setFixedWidth(label_width)
+            scale_row.addWidget(scale_label)
 
             self.ui_scale_slider = QtWidgets.QSlider(
                 QtCore.Qt.Orientation.Horizontal
@@ -490,6 +510,10 @@ class SettingsWindow(QtWidgets.QWidget):
             self.ui_scale_slider.setTickPosition(
                 QtWidgets.QSlider.TickPosition.TicksBelow
             )
+            self.ui_scale_slider.setToolTip(
+                _("Scale everything from 70% to 140%. Takes effect when "
+                  "Writing Tools restarts.")
+            )
             current_scale = int(
                 round(
                     clamp_ui_scale(
@@ -500,43 +524,51 @@ class SettingsWindow(QtWidgets.QWidget):
             )
             self._initial_ui_scale = current_scale
             self.ui_scale_slider.setValue(current_scale)
-            self._on_ui_scale_changed(current_scale)
             self.ui_scale_slider.valueChanged.connect(
                 self._on_ui_scale_changed
             )
-            content_layout.addWidget(self.ui_scale_slider)
+            scale_row.addWidget(self.ui_scale_slider, 1)
 
-            scale_hint = QtWidgets.QLabel(
-                _("Scale everything from 70% to 140%. Takes effect when "
-                  "Writing Tools restarts.")
+            self.ui_scale_value_label = QtWidgets.QLabel("")
+            self.ui_scale_value_label.setFixedWidth(38)
+            self.ui_scale_value_label.setAlignment(
+                QtCore.Qt.AlignmentFlag.AlignRight
+                | QtCore.Qt.AlignmentFlag.AlignVCenter
             )
-            UIUtils.set_label_role(scale_hint, "muted")
-            scale_hint.setWordWrap(True)
-            content_layout.addWidget(scale_hint)
+            self.ui_scale_value_label.setStyleSheet(
+                f"font-size: 13px; font-weight: 600; "
+                f"color: {UIUtils.palette()['accent']};"
+            )
+            scale_row.addWidget(self.ui_scale_value_label)
+            # Fill the percentage now that the label exists.
+            self._on_ui_scale_changed(current_scale)
+            content_layout.addLayout(scale_row)
 
-        # Add provider selection
-        provider_label = QtWidgets.QLabel(_("Choose AI Provider:"))
+        # Provider selection shares its row with the label.
+        provider_row = QHBoxLayout()
+        provider_row.setSpacing(10)
+        provider_label = QtWidgets.QLabel(_("AI Provider"))
         UIUtils.set_label_role(provider_label, "section")
-        content_layout.addWidget(provider_label)
+        provider_label.setFixedWidth(label_width)
+        provider_row.addWidget(provider_label)
 
-        self.provider_dropdown = QtWidgets.QComboBox()
-        self.provider_dropdown.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.provider_dropdown = NoWheelComboBox()
+        self.provider_dropdown.setInsertPolicy(
+            QtWidgets.QComboBox.InsertPolicy.NoInsert
+        )
 
         current_provider = self.app.config.get('provider', self.app.providers[0].provider_name)
         for provider in self.app.providers:
             self.provider_dropdown.addItem(provider.provider_name)
         provider_index = self.provider_dropdown.findText(current_provider)
         self.provider_dropdown.setCurrentIndex(provider_index if provider_index >= 0 else 0)
-        content_layout.addWidget(self.provider_dropdown)
+        provider_row.addWidget(self.provider_dropdown, 1)
+        content_layout.addLayout(provider_row)
 
-        # Add horizontal separator
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-        content_layout.addWidget(line)
-
-        # Create container for provider UI
+        # Container for the selected provider's own settings.
         self.provider_container = QtWidgets.QVBoxLayout()
+        self.provider_container.setContentsMargins(0, 2, 0, 0)
+        self.provider_container.setSpacing(6)
         content_layout.addLayout(self.provider_container)
 
         # Initialize provider UI
@@ -547,12 +579,6 @@ class SettingsWindow(QtWidgets.QWidget):
         self.provider_dropdown.currentIndexChanged.connect(
             lambda: self.init_provider_ui(self.app.providers[self.provider_dropdown.currentIndex()], self.provider_container)
         )
-
-        # Add horizontal separator
-        line = QtWidgets.QFrame()
-        line.setFrameShape(QtWidgets.QFrame.Shape.HLine)
-        line.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
-        content_layout.addWidget(line)
 
         # Set up scroll area with content
         scroll_area.setWidget(scroll_content)
@@ -567,8 +593,9 @@ class SettingsWindow(QtWidgets.QWidget):
             "#bottomContainer { background: transparent; }"
         )
         bottom_layout = QtWidgets.QVBoxLayout(bottom_container)
-        bottom_layout.setContentsMargins(24, 0, 24, 20)  # Match content margins except top
-        bottom_layout.setSpacing(8)
+        bottom_layout.setContentsMargins(20, 4, 20, 12)
+        bottom_layout.setSpacing(6)
+        self.bottom_container = bottom_container
 
         # Add save button to bottom container
         save_button = QtWidgets.QPushButton(_("Finish AI Setup") if self.providers_only else _("Save"))
@@ -588,11 +615,46 @@ class SettingsWindow(QtWidgets.QWidget):
 
         main_layout.addWidget(bottom_container)
 
-        # Set appropriate window height based on screen size
-        screen = QtWidgets.QApplication.primaryScreen().geometry()
-        max_height = int(screen.height() * 0.85)  # 85% of screen height
-        desired_height = min(660, max_height)  # compact default
-        self.resize(560, desired_height)
+        # Size the window to the content so no scrollbar is needed.
+        self._schedule_fit_height()
+
+    # -- compact sizing ----------------------------------------------------
+
+    _MIN_HEIGHT = 260
+
+    def _schedule_fit_height(self):
+        """Fit the window to its content once the new layout is in place."""
+        QtCore.QTimer.singleShot(0, self._fit_height)
+
+    def _fit_height(self):
+        """
+        Resize the window to show the whole form.
+
+        The form is compact on purpose; this keeps the window as small as the
+        content allows, and never taller than the available screen.
+        """
+        content = getattr(self, "scroll_content", None)
+        bottom = getattr(self, "bottom_container", None)
+        if content is None or bottom is None:
+            return
+        try:
+            width = self.width() or 560
+            layout = content.layout()
+            content_height = layout.heightForWidth(width) if layout is not None else -1
+            if content_height <= 0:
+                content_height = content.sizeHint().height()
+            total = content_height + bottom.sizeHint().height() + 4
+        except RuntimeError:
+            return
+        screen = self.screen()
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        available = screen.availableGeometry().height() if screen is not None else 800
+        total = max(self._MIN_HEIGHT, min(total, int(available * 0.94)))
+        try:
+            self.setFixedHeight(total)
+        except RuntimeError:
+            pass
 
     @staticmethod
     def toggle_autostart(state):

@@ -11,6 +11,34 @@ try:
 except Exception:  # darkdetect can fail on unusual platforms
     colorMode = 'light'
 
+
+class NoWheelComboBox(QtWidgets.QComboBox):
+    """
+    A combo box that ignores the mouse wheel.
+
+    Scrolling a settings page used to change the selected provider or model
+    whenever the pointer happened to be over a dropdown. The wheel is now
+    handed to the enclosing scroll area instead, so the page scrolls while the
+    selection only changes on an explicit click.
+    """
+
+    def wheelEvent(self, event):  # noqa: N802 (Qt naming)
+        area = self._scroll_area()
+        if area is not None:
+            QtWidgets.QApplication.sendEvent(area.viewport(), event)
+            return
+        event.ignore()
+
+    def _scroll_area(self):
+        """Return the closest enclosing scroll area, if there is one."""
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QtWidgets.QAbstractScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+
 class UIUtils:
     # Windows 11 Fluent-inspired palette. Neutral surfaces, one accent colour,
     # compact controls. The dark variant uses a light-blue accent with dark

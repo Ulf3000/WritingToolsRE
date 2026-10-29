@@ -63,7 +63,7 @@ from PySide6 import QtWidgets
 from PySide6.QtWidgets import QVBoxLayout
 
 from apputils import clean_model_text, normalize_base_url
-from ui.UIUtils import UIUtils
+from ui.UIUtils import NoWheelComboBox, UIUtils
 
 # Obfuscation prefix to identify encrypted API keys
 _OBFUSCATION_PREFIX = "enc:"
@@ -527,7 +527,7 @@ class DropdownSetting(AIProviderSetting):
         label = QtWidgets.QLabel(self.display_name)
         UIUtils.set_label_role(label, "section")
         row_layout.addWidget(label)
-        self.dropdown = QtWidgets.QComboBox()
+        self.dropdown = NoWheelComboBox()
 
         for option, value in self.options:
             self.dropdown.addItem(option, value)
