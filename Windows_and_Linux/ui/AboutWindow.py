@@ -2,7 +2,7 @@ import webbrowser
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from ui.UIUtils import UIUtils, colorMode
+from ui.UIUtils import UIUtils
 
 _ = lambda x: x
 
@@ -19,7 +19,7 @@ class AboutWindow(QtWidgets.QWidget):
         Initialize the user interface for the about window.
         """
         self.setWindowTitle(' ') # Hack to hide the title bar text. TODO: Find a better solution later.
-        self.setGeometry(300, 300, 650, 720)  # Set the window size
+        self.setGeometry(300, 300, 560, 620)  # Compact standard window size
 
         # Center the window on the screen. I'm not aware of any methods in UIUtils to do this, so I'll be doing it manually.
         screen = QtWidgets.QApplication.primaryScreen().geometry()
@@ -38,11 +38,11 @@ class AboutWindow(QtWidgets.QWidget):
         self.setWindowIcon(QtGui.QIcon(pixmap))
 
         content_layout = QtWidgets.QVBoxLayout(self.background)
-        content_layout.setContentsMargins(30, 30, 30, 30)
-        content_layout.setSpacing(20)
+        content_layout.setContentsMargins(24, 22, 24, 22)
+        content_layout.setSpacing(14)
 
         title_label = QtWidgets.QLabel(_("About Writing Tools"))
-        title_label.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
+        UIUtils.set_label_role(title_label, "title")
         content_layout.addWidget(title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
         about_text = "<p style='text-align: center;'>" + \
@@ -63,7 +63,7 @@ class AboutWindow(QtWidgets.QWidget):
                 "<b>2. <a href=\"https://github.com/CameronRedmore\">Cameron Redmore (CameronRedmore)</a>:</b><br>" + \
                 _("Extensively refactored Writing Tools and added OpenAI Compatible API support, streamed responses, and the text generation mode when no text is selected.") + "<br>" + \
                 '<b>3. <a href="https://github.com/Soszust40">Soszust40 (Soszust40)</a>:</b><br>' + \
-                _('Helped add dark mode, the plain theme, tray menu fixes, and UI improvements.') + '</b><br>' + \
+                _('Helped add dark mode, tray menu fixes, and UI improvements.') + '</b><br>' + \
                 '<b>4. <a href="https://github.com/arsaboo">Alok Saboo (arsaboo)</a>:</b><br>' + \
                 _('Helped improve the reliability of text selection.') + '</b><br>' + \
                 '<b>5. <a href="https://github.com/raghavdhingra24">raghavdhingra24</a>:</b><br>' + \
@@ -75,13 +75,12 @@ class AboutWindow(QtWidgets.QWidget):
                 'If you have a Mac, be sure to check out the <a href="https://github.com/theJayTea/WritingTools#-macos">Writing Tools macOS port</a> by <a href="https://github.com/Aryamirsepasi">Arya Mirsepasi</a>!<br>' + \
                 """</p>
                 <p style='text-align: center;'>
-                <b>Version:</b> 7.0 (Codename: Impeccably Improved)
+                <b>Version:</b> 9.0 (Codename: Freedom Tiers)
                 </p>
                 <p />
                 """
 
         about_label = QtWidgets.QLabel(about_text)
-        about_label.setStyleSheet(f"font-size: 16px; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
         about_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         about_label.setWordWrap(True)
         about_label.setOpenExternalLinks(True)  # Allow opening hyperlinks
@@ -89,25 +88,19 @@ class AboutWindow(QtWidgets.QWidget):
         scroll_area = QtWidgets.QScrollArea()
         scroll_area.setWidget(about_label)
         scroll_area.setWidgetResizable(True)
-        scroll_area.setStyleSheet("background: transparent;")
+        scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        scroll_area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QScrollArea > QWidget { background: transparent; }"
+            "QScrollArea > QWidget > QWidget { background: transparent; }"
+        )
+        scroll_area.viewport().setAutoFillBackground(False)
 
         content_layout.addWidget(scroll_area)
 
         # Add "Check for updates" button
         update_button = QtWidgets.QPushButton('Check for updates')
-        update_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 10px;
-                font-size: 16px;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
+        UIUtils.set_variant(update_button, "primary")
         update_button.clicked.connect(self.check_for_updates)
         content_layout.addWidget(update_button)
 
@@ -116,9 +109,3 @@ class AboutWindow(QtWidgets.QWidget):
         Open the GitHub releases page to check for updates.
         """
         webbrowser.open("https://github.com/theJayTea/WritingTools/releases")
-
-    def original_app(self):
-        """
-        Open the original app GitHub page.
-        """
-        webbrowser.open("https://github.com/TheJayTea/WritingTools")

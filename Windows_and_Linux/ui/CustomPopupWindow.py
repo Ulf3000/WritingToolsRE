@@ -1,7 +1,5 @@
 import json
 import logging
-import os
-import sys
 from functools import partial
 
 from pynput import keyboard as pykeyboard
@@ -19,69 +17,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.UIUtils import ThemeBackground, colorMode
+from apputils import data_path, read_json
+from defaults import get_default_options
+from ui.UIUtils import ThemeBackground, UIUtils
 
 _ = lambda x: x
 
-################################################################################
-# Default `options.json` content to restore when the user presses "Reset"
-################################################################################
-DEFAULT_OPTIONS_JSON = r"""{
-  "Proofread": {
-    "prefix": "Proofread this:\n\n",
-    "instruction": "You are a grammar proofreading assistant.\nOutput ONLY the corrected text without any additional comments.\nMaintain the original text structure and writing style.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with this (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/magnifying-glass",
-    "open_in_window": false
-  },
-  "Rewrite": {
-    "prefix": "Rewrite this:\n\n",
-    "instruction": "You are a writing assistant.\nRewrite the text provided by the user to improve phrasing.\nOutput ONLY the rewritten text without additional comments.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with proofreading (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/rewrite",
-    "open_in_window": false
-  },
-  "Friendly": {
-    "prefix": "Make this more friendly:\n\n",
-    "instruction": "You are a writing assistant.\nRewrite the text provided by the user to be more friendly.\nOutput ONLY the friendly text without additional comments.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with rewriting (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/smiley-face",
-    "open_in_window": false
-  },
-  "Professional": {
-    "prefix": "Make this more professional:\n\n",
-    "instruction": "You are a writing assistant.\nRewrite the text provided by the user to be more professional. Output ONLY the professional text without additional comments.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with rewriting (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/briefcase",
-    "open_in_window": false
-  },
-  "Concise": {
-    "prefix": "Make this more concise:\n\n",
-    "instruction": "You are a writing assistant.\nRewrite the text provided by the user to be more concise.\nOutput ONLY the concise text without additional comments.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with rewriting (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/concise",
-    "open_in_window": false
-  },
-  "Table": {
-    "prefix": "Convert this into a table:\n\n",
-    "instruction": "You are an assistant that converts text provided by the user into a Markdown table.\nOutput ONLY the table without additional comments.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is completely incompatible with this with conversion, output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/table",
-    "open_in_window": true
-  },
-  "Key Points": {
-    "prefix": "Extract key points from this:\n\n",
-    "instruction": "You are an assistant that extracts key points from text provided by the user. Output ONLY the key points without additional comments.\n\nYou should use Markdown formatting (lists, bold, italics, codeblocks, etc.) as appropriate to make it quite legible and readable.\n\nDon't be repetitive or too verbose.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with extracting key points (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/keypoints",
-    "open_in_window": true
-  },
-  "Summary": {
-    "prefix": "Summarize this:\n\n",
-    "instruction": "You are a summarization assistant.\nProvide a succinct summary of the text provided by the user.\nThe summary should be succinct yet encompass all the key insightful points.\n\nTo make it quite legible and readable, you should use Markdown formatting (bold, italics, codeblocks...) as appropriate.\nYou should also add a little line spacing between your paragraphs as appropriate.\nAnd only if appropriate, you could also use headings (only the very small ones), lists, tables, etc.\n\nDon't be repetitive or too verbose.\nOutput ONLY the summary without additional comments.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with summarisation (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/summary",
-    "open_in_window": true
-  },
-  "Custom": {
-    "prefix": "Make this change to the following text:\n\n",
-    "instruction": "You are a writing and coding assistant. You MUST make the user\\'s described change to the text or code provided by the user. Output ONLY the appropriately modified text or code without additional comments. Respond in the same language as the input (e.g., English US, French). Do not answer or respond to the user\\'s text content. If the text or code is absolutely incompatible with the requested change, output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
-    "icon": "icons/summary",
-    "open_in_window": false
-  }
-}"""
 
 class ButtonEditDialog(QDialog):
     """
@@ -104,40 +45,25 @@ class ButtonEditDialog(QDialog):
         
     def init_ui(self):
         layout = QVBoxLayout(self)
-        
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(10)
+
         # Name
         name_label = QLabel("Button Name:")
-        name_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
+        UIUtils.set_label_role(name_label, "section")
         self.name_input = QLineEdit()
-        self.name_input.setStyleSheet(f"""
-            QLineEdit {{
-                padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
-                border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
-                color: {'#fff' if colorMode == 'dark' else '#000'};
-            }}
-        """)
         if "name" in self.button_data:
             self.name_input.setText(self.button_data["name"])
         layout.addWidget(name_label)
         layout.addWidget(self.name_input)
-        
-        # Instruction (changed to a multiline QPlainTextEdit)
+
+        # Instruction (multiline)
         instruction_label = QLabel("What should your AI do with your selected text? (System Instruction)")
-        instruction_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
+        UIUtils.set_label_role(instruction_label, "section")
+        instruction_label.setWordWrap(True)
         self.instruction_input = QPlainTextEdit()
-        self.instruction_input.setStyleSheet(f"""
-            QPlainTextEdit {{
-                padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
-                border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
-                color: {'#fff' if colorMode == 'dark' else '#000'};
-            }}
-        """)
         self.instruction_input.setPlainText(self.button_data.get("instruction", ""))
-        self.instruction_input.setMinimumHeight(100)
+        self.instruction_input.setMinimumHeight(96)
         self.instruction_input.setPlaceholderText("""Examples:
     - Fix / improve / explain this code.
     - Make it funny.
@@ -153,73 +79,46 @@ class ButtonEditDialog(QDialog):
         
         # open_in_window
         display_label = QLabel("How should your AI response be shown?")
-        display_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
+        UIUtils.set_label_role(display_label, "section")
         layout.addWidget(display_label)
         
         radio_layout = QHBoxLayout()
         self.replace_radio = QRadioButton("Replace the selected text")
-        self.window_radio = QRadioButton("In a pop-up window (with follow-up support)")
-        for r in (self.replace_radio, self.window_radio):
-            r.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'};")
-        
+        self.window_radio = QRadioButton("In a pop-up window")
         self.replace_radio.setChecked(not self.button_data.get("open_in_window", False))
         self.window_radio.setChecked(self.button_data.get("open_in_window", False))
-
         radio_layout.addWidget(self.replace_radio)
         radio_layout.addWidget(self.window_radio)
         layout.addLayout(radio_layout)
 
-        # Direct hotkey (optional). Lets the user fire this button from
-        # anywhere without opening the popup first. Stored per-button in
-        # options.json under a "hotkey" key; absent = no hotkey, which is
-        # how every existing/legacy button starts.
+        # Direct hotkey (optional)
         hotkey_label = QLabel("Direct hotkey (optional):")
-        hotkey_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
+        UIUtils.set_label_role(hotkey_label, "section")
         layout.addWidget(hotkey_label)
 
         self.hotkey_input = QLineEdit()
-        self.hotkey_input.setStyleSheet(f"""
-            QLineEdit {{
-                padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
-                border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
-                color: {'#fff' if colorMode == 'dark' else '#000'};
-            }}
-        """)
         self.hotkey_input.setPlaceholderText("e.g. ctrl+j  (leave blank for none)")
         self.hotkey_input.setText(self.button_data.get("hotkey", ""))
         layout.addWidget(self.hotkey_input)
 
         hotkey_hint = QLabel(
             "Press this combination from anywhere to run this button "
-            "directly, skipping the popup.\nUse '+' between keys, e.g. "
+            "directly, skipping the popup. Use '+' between keys, e.g. "
             "ctrl+j or ctrl+shift+p."
         )
-        hotkey_hint.setStyleSheet(
-            f"color: {'#bbb' if colorMode == 'dark' else '#555'}; font-size: 12px;"
-        )
+        UIUtils.set_label_role(hotkey_hint, "muted")
         hotkey_hint.setWordWrap(True)
         layout.addWidget(hotkey_hint)
 
         # OK & Cancel
         btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
         ok_button = QPushButton("OK")
         cancel_button = QPushButton("Cancel")
+        UIUtils.set_variant(ok_button, "primary")
+        UIUtils.set_variant(cancel_button, "secondary")
         for btn in (ok_button, cancel_button):
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {'#444' if colorMode == 'dark' else '#f0f0f0'};
-                    color: {'#fff' if colorMode == 'dark' else '#000'};
-                    border: 1px solid {'#666' if colorMode == 'dark' else '#ccc'};
-                    border-radius: 5px;
-                    padding: 8px;
-                    min-width: 100px;
-                }}
-                QPushButton:hover {{
-                    background-color: {'#555' if colorMode == 'dark' else '#e0e0e0'};
-                }}
-            """)
+            btn.setMinimumWidth(84)
         btn_layout.addWidget(ok_button)
         btn_layout.addWidget(cancel_button)
         layout.addLayout(btn_layout)
@@ -227,12 +126,10 @@ class ButtonEditDialog(QDialog):
         ok_button.clicked.connect(self.accept)
         cancel_button.clicked.connect(self.reject)
         
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {'#222' if colorMode == 'dark' else '#f5f5f5'};
-                border-radius: 10px;
-            }}
-        """)
+        self.setStyleSheet(
+            f"QDialog {{ background-color: {UIUtils.palette()['bg']}; }}"
+        )
+        self.setMinimumWidth(440)
 
     def get_button_data(self):
         data = {
@@ -268,26 +165,46 @@ class DraggableButton(QtWidgets.QPushButton):
         # Use a dynamic property "hover" (default False)
         self.setProperty("hover", False)
 
-        # Set fixed size (adjust as needed)
-        self.setFixedSize(120, 40)
+        # Set fixed size (compact, standard toolbar-button size)
+        self.setFixedSize(112, 36)
 
-        # Define base style using the dynamic property instead of the :hover pseudo-class
+        # Neutral surface + hairline border, like a desktop list/toolbar item.
+        palette = UIUtils.palette()
         self.base_style = f"""
             QPushButton {{
-                background-color: {"#444" if colorMode=="dark" else "white"};
-                border: 1px solid {"#666" if colorMode=="dark" else "#ccc"};
-                border-radius: 8px;
-                padding: 10px;
-                font-size: 14px;
+                background-color: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 6px;
+                padding: 6px 8px;
+                font-size: 12px;
                 text-align: left;
-                color: {"#fff" if colorMode=="dark" else "#000"};
+                color: {palette['text']};
             }}
             QPushButton[hover="true"] {{
-                background-color: {"#555" if colorMode=="dark" else "#f0f0f0"};
+                background-color: {palette['hover']};
+                border-color: {palette['muted']};
             }}
         """
         self.setStyleSheet(self.base_style)
         logging.debug("DraggableButton initialized")
+
+    # Edit mode gives each button a small top strip for the edit/delete
+    # badges, so they never cover the label.
+    EDIT_PADDING_STYLE = """
+        QPushButton {
+            padding-top: 21px;
+            padding-bottom: 2px;
+        }
+    """
+
+    def set_edit_mode_style(self, editing):
+        """Grow the button in edit mode and reserve room for the badges."""
+        target = (112, 48) if editing else (112, 36)
+        if (self.width(), self.height()) != target:
+            self.setFixedSize(*target)
+        self.setStyleSheet(
+            self.base_style + (self.EDIT_PADDING_STYLE if editing else "")
+        )
 
     def enterEvent(self, event):
         # Only update the hover property if NOT in edit mode.
@@ -321,9 +238,13 @@ class DraggableButton(QtWidgets.QPushButton):
             return
 
         if self.popup.edit_mode:
+            try:
+                idx = self.popup.button_widgets.index(self)
+            except ValueError:
+                self.drag_start_position = None
+                return
             drag = QtGui.QDrag(self)
             mime_data = QtCore.QMimeData()
-            idx = self.popup.button_widgets.index(self)
             mime_data.setData("application/x-button-index", str(idx).encode())
             drag.setMimeData(mime_data)
 
@@ -338,10 +259,10 @@ class DraggableButton(QtWidgets.QPushButton):
     def dragEnterEvent(self, event):
         if self.popup.edit_mode and event.mimeData().hasFormat("application/x-button-index"):
             event.acceptProposedAction()
-            self.setStyleSheet(self.base_style + """
-                QPushButton {
-                    border: 2px dashed #666;
-                }
+            self.setStyleSheet(self.base_style + f"""
+                QPushButton {{
+                    border: 2px dashed {UIUtils.palette()['accent']};
+                }}
             """)
         else:
             event.ignore()
@@ -355,10 +276,16 @@ class DraggableButton(QtWidgets.QPushButton):
             event.ignore()
             return
 
-        source_idx = int(event.mimeData().data("application/x-button-index").data().decode())
-        target_idx = self.popup.button_widgets.index(self)
+        try:
+            source_idx = int(
+                event.mimeData().data("application/x-button-index").data().decode()
+            )
+            target_idx = self.popup.button_widgets.index(self)
+        except (ValueError, TypeError, UnicodeDecodeError):
+            event.ignore()
+            return
 
-        if source_idx != target_idx:
+        if 0 <= source_idx < len(self.popup.button_widgets) and source_idx != target_idx:
             bw = self.popup.button_widgets
             bw[source_idx], bw[target_idx] = bw[target_idx], bw[source_idx]
             self.popup.rebuild_grid_layout()
@@ -401,17 +328,16 @@ class CustomPopupWindow(QtWidgets.QWidget):
         main_layout.setContentsMargins(0,0,0,0)
         
         self.background = ThemeBackground(
-            self, 
-            self.app.config.get('theme','gradient'),
+            self,
             is_popup=True,
-            border_radius=10
+            border_radius=8
         )
         main_layout.addWidget(self.background)
         
         content_layout = QtWidgets.QVBoxLayout(self.background)
-        # Margin Control
-        content_layout.setContentsMargins(10, 4, 10, 10)
-        content_layout.setSpacing(10)
+        # Margin control
+        content_layout.setContentsMargins(8, 4, 8, 8)
+        content_layout.setSpacing(8)
         
         # TOP BAR LAYOUT & STYLE
         top_bar = QHBoxLayout()
@@ -419,59 +345,20 @@ class CustomPopupWindow(QtWidgets.QWidget):
         top_bar.setSpacing(0)
 
         # The "Edit"/"Done" button (left), same exact size as close button
-        self.edit_button = QPushButton()
-        pencil_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                                'icons',
-                                'pencil' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(pencil_icon):
-            self.edit_button.setIcon(QtGui.QIcon(pencil_icon))
-        # Reduced size to 24x24 to shrink top bar
-        self.edit_button.setFixedSize(24, 24)
-        self.edit_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 6px;
-                padding: 0px;
-                margin-top: 3px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-            }}
-        """)
+        self.edit_button = UIUtils.icon_button("pencil", size=24)
         self.edit_button.clicked.connect(self.toggle_edit_mode)
         top_bar.addWidget(self.edit_button, 0, Qt.AlignLeft)
 
-        # The label "Drag to rearrange" (BOLD as requested)
+        # The label "Drag to rearrange" (edit mode only)
         self.drag_label = QLabel("Drag to rearrange")
-        self.drag_label.setStyleSheet(f"""
-            color: {'#fff' if colorMode=='dark' else '#333'};
-            font-size: 14px;
-            font-weight: bold; /* <--- BOLD TEXT */
-        """)
+        UIUtils.set_label_role(self.drag_label, "muted")
         self.drag_label.setAlignment(Qt.AlignCenter)
         self.drag_label.hide()
         top_bar.addWidget(self.drag_label, 1, Qt.AlignVCenter | Qt.AlignHCenter)
 
         # The "Reset" button (edit-mode only) - also 24x24
-        self.reset_button = QPushButton()
-        reset_icon_path = os.path.join(os.path.dirname(sys.argv[0]), 'icons',
-                                    'restore' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(reset_icon_path):
-            self.reset_button.setIcon(QtGui.QIcon(reset_icon_path))
-        self.reset_button.setText("")
-        self.reset_button.setFixedSize(24, 24)
-        self.reset_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 6px;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-            }}
-        """)
+        self.reset_button = UIUtils.icon_button("restore", size=24)
+        self.reset_button.setToolTip("Reset buttons to defaults")
         self.reset_button.clicked.connect(self.on_reset_clicked)
         self.reset_button.hide()
         top_bar.addWidget(self.reset_button, 0, Qt.AlignRight)
@@ -479,20 +366,11 @@ class CustomPopupWindow(QtWidgets.QWidget):
         # Close button block:
         self.close_button = QPushButton("×")
         self.close_button.setFixedSize(24, 24)
-        self.close_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {'#fff' if colorMode=='dark' else '#333'};
-                font-size: 20px;   /* bigger text */
-                font-weight: bold; /* bold text */
-                border: none;
-                border-radius: 6px;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-            }}
-        """)
+        UIUtils.set_variant(self.close_button, "icon")
+        self.close_button.setStyleSheet(
+            f"QPushButton {{ color: {UIUtils.palette()['text']}; "
+            f"font-size: 15px; font-weight: 600; }}"
+        )
         self.close_button.clicked.connect(self.close)
         top_bar.addWidget(self.close_button, 0, Qt.AlignRight)
         content_layout.addLayout(top_bar)
@@ -501,41 +379,17 @@ class CustomPopupWindow(QtWidgets.QWidget):
         # Input area (hidden in edit mode)
         self.input_area = QWidget()
         input_layout = QHBoxLayout(self.input_area)
-        input_layout.setContentsMargins(0,0,0,0)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setSpacing(6)
         
         self.custom_input = QLineEdit()
         self.custom_input.setPlaceholderText(_("Describe your change..."))
-        self.custom_input.setStyleSheet(f"""
-            QLineEdit {{
-                padding: 8px;
-                border: 1px solid {'#777' if colorMode=='dark' else '#ccc'};
-                border-radius: 8px;
-                background-color: {'#333' if colorMode=='dark' else 'white'};
-                color: {'#fff' if colorMode=='dark' else '#000'};
-            }}
-        """)
         self.custom_input.returnPressed.connect(self.on_custom_change)
         input_layout.addWidget(self.custom_input)
         
-        send_btn = QPushButton()
-        send_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                                'icons',
-                                'send' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(send_icon):
-            send_btn.setIcon(QtGui.QIcon(send_icon))
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {'#2e7d32' if colorMode=='dark' else '#4CAF50'};
-                border: none;
-                border-radius: 8px;
-                padding: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#1b5e20' if colorMode=='dark' else '#45a049'};
-            }}
-        """)
-        send_btn.setFixedSize(self.custom_input.sizeHint().height(),
-                            self.custom_input.sizeHint().height())
+        send_btn = UIUtils.icon_button(
+            "send", size=30, variant="primary", on_accent=True
+        )
         send_btn.clicked.connect(self.on_custom_change)
         input_layout.addWidget(send_btn)
         
@@ -558,21 +412,52 @@ class CustomPopupWindow(QtWidgets.QWidget):
 
     @staticmethod
     def load_options():
-        options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
-        if os.path.exists(options_path):
-            with open(options_path, 'r') as f:
-                data = json.load(f)
-                logging.debug('Options loaded successfully')
-        else:
-            logging.debug('Options file not found')
+        """Load options.json, falling back to the built-in defaults."""
+        options_path = data_path('options.json')
+        data = read_json(options_path)
+        if not isinstance(data, dict) or not data:
+            logging.warning('Options file missing/invalid; using defaults')
+            return get_default_options()
 
-        return data
+        # Ignore malformed entries instead of crashing while building buttons.
+        sanitized = {}
+        for name, cfg in data.items():
+            if not isinstance(name, str) or not isinstance(cfg, dict):
+                continue
+            if not isinstance(cfg.get('prefix'), str) or not isinstance(
+                cfg.get('instruction'), str
+            ):
+                continue
+            sanitized[name] = cfg
+        return sanitized or get_default_options()
+
+    def _live_options(self):
+        """
+        Options as currently held by the app.
+
+        The app keeps the authoritative, sanitised dict in memory and already
+        owns the file watcher, so the popup does not need to re-read
+        options.json for every button rebuild or hotkey check. Falls back to
+        disk only in tests / standalone use.
+        """
+        options = getattr(self.app, "options", None)
+        if isinstance(options, dict) and options:
+            return options
+        return self.load_options()
 
     @staticmethod
     def save_options(options):
-        options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
-        with open(options_path, 'w') as f:
-            json.dump(options, f, indent=2)
+        """Atomically save options.json next to the executable."""
+        try:
+            self_app = QtWidgets.QApplication.instance()
+            if self_app is not None and hasattr(self_app, 'save_options'):
+                if self_app.save_options(options):
+                    return
+            # Fallback for tests / unusual startup paths.
+            from apputils import atomic_write_json
+            atomic_write_json(data_path('options.json'), options, indent=2)
+        except Exception as exc:  # noqa: BLE001
+            logging.error('Could not save options.json: %s', exc)
 
     def build_buttons_list(self):
         """
@@ -580,33 +465,71 @@ class CustomPopupWindow(QtWidgets.QWidget):
         storing them in self.button_widgets in the same order as the JSON file.
         """
         self.button_widgets.clear()
-        data = self.load_options()
+        data = self._live_options()
 
-        for k,v in data.items():
-            if k=="Custom":
+        for key, value in data.items():
+            if key == "Custom" or not isinstance(value, dict):
                 continue
-            b = DraggableButton(self, k, k)
-            icon_path = os.path.join(os.path.dirname(sys.argv[0]),
-                                    v["icon"] + ('_dark' if colorMode=='dark' else '_light') + '.png')
-            if os.path.exists(icon_path):
-                b.setIcon(QtGui.QIcon(icon_path))
+            button = DraggableButton(self, key, key)
+            icon_relative = value.get("icon")
+            if isinstance(icon_relative, str) and icon_relative:
+                button.setIcon(UIUtils.icon(icon_relative))
 
             # Tooltip surfaces the direct hotkey (if any) for discoverability.
-            # Buttons without a hotkey get no tooltip — keeps things uncluttered.
-            hotkey = (v.get("hotkey") or "").strip()
+            hotkey = (value.get("hotkey") or "").strip()
             if hotkey:
-                b.setToolTip(f"Direct hotkey: {hotkey}")
+                button.setToolTip(f"Direct hotkey: {hotkey}")
 
             if not self.edit_mode:
-                b.clicked.connect(partial(self.on_generic_instruction, k))
-            self.button_widgets.append(b)
+                button.clicked.connect(partial(self.on_generic_instruction, key))
+            self.button_widgets.append(button)
+
+    def _apply_options_and_rebuild(self):
+        """Reload options.json and rebuild this popup — no restart needed."""
+        try:
+            self.app.apply_options_changes(refresh_popup=False)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Could not apply options changes live: %s", exc)
+        self.build_buttons_list()
+        self.rebuild_grid_layout()
+        self._fit_on_screen()
+
+    def refresh_from_options(self):
+        """Rebuild from options.json after an external edit (watcher path)."""
+        if not self.isVisible():
+            # The next hotkey press constructs a fresh popup anyway.
+            return
+        self.build_buttons_list()
+        self.rebuild_grid_layout()
+        self._fit_on_screen()
+
+    def _fit_on_screen(self):
+        """Keep the popup fully visible after adding/removing buttons."""
+        try:
+            self.adjustSize()
+        except RuntimeError:
+            return
+        if not self.isVisible():
+            return
+        screen = QtGui.QGuiApplication.screenAt(self.frameGeometry().center())
+        if screen is None:
+            screen = QtGui.QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
+        frame = self.frameGeometry()
+        x = max(area.left(), min(frame.x(), area.right() - frame.width()))
+        y = max(area.top(), min(frame.y(), area.bottom() - frame.height()))
+        if (x, y) != (frame.x(), frame.y()):
+            self.move(x, y)
 
     def rebuild_grid_layout(self, parent_layout=None):
         """Rebuild grid layout with consistent sizing and proper Add New button placement."""
         if not parent_layout:
             parent_layout = self.background.layout()
 
-        # Remove existing grid and Add New button
+        # Remove the existing grid (and any stale buttons it still owns) plus
+        # the old "+ Add New" button.
         for i in reversed(range(parent_layout.count())):
             item = parent_layout.itemAt(i)
             if isinstance(item, QtWidgets.QGridLayout):
@@ -615,16 +538,21 @@ class CustomPopupWindow(QtWidgets.QWidget):
                     w = grid.itemAt(j).widget()
                     if w:
                         grid.removeWidget(w)
+                        # Buttons replaced by a fresh list must be destroyed;
+                        # otherwise the old copies float over the new grid.
+                        if w not in self.button_widgets:
+                            w.deleteLater()
                 parent_layout.removeItem(grid)
+                grid.deleteLater()
             elif (item.widget() and isinstance(item.widget(), QPushButton) 
                 and item.widget().text() == "+ Add New"):
                 item.widget().deleteLater()
 
         # Create new grid with fixed column width
         grid = QtWidgets.QGridLayout()
-        grid.setSpacing(10)  
-        grid.setColumnMinimumWidth(0, 120)
-        grid.setColumnMinimumWidth(1, 120)
+        grid.setSpacing(8)
+        grid.setColumnMinimumWidth(0, 112)
+        grid.setColumnMinimumWidth(1, 112)
         
         # Add buttons to grid
         row = 0
@@ -635,27 +563,24 @@ class CustomPopupWindow(QtWidgets.QWidget):
             if col > 1:
                 col = 0
                 row += 1
-        
+
+        # Buttons created by add/edit/delete have no edit overlays yet.
+        if self.edit_mode:
+            for b in self.button_widgets:
+                b.set_edit_mode_style(True)
+                if not getattr(b, "icon_container", None):
+                    self.add_edit_delete_icons(b)
+
         parent_layout.addLayout(grid)
         
         # Add New button (only in edit mode)
         if self.edit_mode:
             add_btn = QPushButton("+ Add New")
-            add_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {'#333' if colorMode=='dark' else '#e0e0e0'};
-                    border: 1px solid {'#666' if colorMode=='dark' else '#ccc'};
-                    border-radius: 8px;
-                    padding: 10px;
-                    font-size: 14px;
-                    text-align: center;
-                    color: {'#fff' if colorMode=='dark' else '#000'};
-                    margin-top: 10px;
-                }}
-                QPushButton:hover {{
-                    background-color: {'#444' if colorMode=='dark' else '#d0d0d0'};
-                }}
-            """)
+            UIUtils.set_variant(add_btn, "secondary")
+            add_btn.setStyleSheet(
+                f"QPushButton {{ border: 1px dashed "
+                f"{UIUtils.palette()['border']}; margin-top: 8px; }}"
+            )
             add_btn.clicked.connect(self.add_new_button_clicked)
             parent_layout.addWidget(add_btn)
 
@@ -669,10 +594,12 @@ class CustomPopupWindow(QtWidgets.QWidget):
         
         btn.icon_container.setGeometry(0, 0, btn.width(), btn.height())
         
+        palette = UIUtils.palette()
         circle_style = f"""
             QPushButton {{
-                background-color: {'#666' if colorMode=='dark' else '#999'};
-                border-radius: 10px;
+                background-color: {palette['card']};
+                border: 1px solid {palette['border']};
+                border-radius: 9px;
                 min-width: 16px;
                 min-height: 16px;
                 max-width: 16px;
@@ -681,28 +608,23 @@ class CustomPopupWindow(QtWidgets.QWidget):
                 margin: 0px;
             }}
             QPushButton:hover {{
-                background-color: {'#888' if colorMode=='dark' else '#bbb'};
+                background-color: {palette['hover']};
+                border-color: {palette['muted']};
             }}
         """
         
-        # Create edit icon (top-left)
+        # Create edit icon (top-left strip)
         edit_btn = QPushButton(btn.icon_container)
-        edit_btn.setGeometry(3, 3, 16, 16)
-        pencil_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                        'icons', 'pencil' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(pencil_icon):
-            edit_btn.setIcon(QtGui.QIcon(pencil_icon))
+        edit_btn.setGeometry(5, 2, 16, 16)
+        edit_btn.setIcon(UIUtils.icon("pencil"))
         edit_btn.setStyleSheet(circle_style)
         edit_btn.clicked.connect(partial(self.edit_button_clicked, btn))
         edit_btn.show()
         
-        # Create delete icon (top-right)
+        # Create delete icon (top-right strip)
         delete_btn = QPushButton(btn.icon_container)
-        delete_btn.setGeometry(btn.width() - 23, 3, 16, 16)
-        del_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                                'icons', 'cross' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(del_icon):
-            delete_btn.setIcon(QtGui.QIcon(del_icon))
+        delete_btn.setGeometry(btn.width() - 21, 2, 16, 16)
+        delete_btn.setIcon(UIUtils.icon("cross"))
         delete_btn.setStyleSheet(circle_style)
         delete_btn.clicked.connect(partial(self.delete_button_clicked, btn))
         delete_btn.show()
@@ -716,22 +638,11 @@ class CustomPopupWindow(QtWidgets.QWidget):
         logging.debug(f'Edit mode toggled: {self.edit_mode}')
 
         if self.edit_mode:
-            # Switch to edit mode:
+            # Switch to edit mode: check icon, same compact size.
             icon_name = "check"
-            # No text, just the check icon, a bit bigger:
             self.edit_button.setText("")
-            self.edit_button.setFixedSize(36, 36)
-            self.edit_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent;
-                    border: none;
-                    border-radius: 6px;
-                    padding: 0px;
-                }}
-                QPushButton:hover {{
-                    background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-                }}
-            """)
+            self.edit_button.setFixedSize(24, 24)
+            UIUtils.set_variant(self.edit_button, "icon")
             # Hide close, show reset button & drag label
             self.close_button.hide()
             self.reset_button.show()
@@ -741,34 +652,24 @@ class CustomPopupWindow(QtWidgets.QWidget):
             # Switch back to normal (non-edit) mode:
             icon_name = "pencil"
             self.edit_button.setText("")
-            self.edit_button.setFixedSize(24, 24)  # Return to normal size
+            self.edit_button.setFixedSize(24, 24)
+            UIUtils.set_variant(self.edit_button, "icon")
             # Show close, hide reset & drag label
             self.close_button.show()
             self.reset_button.hide()
             self.drag_label.hide()
 
-            # Inform the user that the app will close to apply changes
-            msg = QtWidgets.QMessageBox()
-            msg.setWindowTitle("Quitting to apply changes...")
-            msg.setText("Writing Tools needs to relaunch to apply your changes & will now quit.\nPlease relaunch Writing Tools.exe to see your changes.")
-            msg.setStandardButtons(QtWidgets.QMessageBox.Ok)
-            msg.exec_()
-
-            self.app.load_options()
-            self.close()
-            # Instead of restarting, simply exit the app:
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
-            return
+            # Persist the current arrangement and apply it live. The next
+            # click already uses the updated instructions — no relaunch.
+            self.update_json_from_grid()
+            try:
+                self.app.apply_options_changes(refresh_popup=False)
+            except Exception as exc:  # noqa: BLE001
+                logging.error("Could not apply options changes live: %s", exc)
 
 
         # Update the edit button icon now that icon_name is defined
-        icon_path = os.path.join(
-            os.path.dirname(sys.argv[0]),
-            'icons',
-            f"{icon_name}_{'dark' if colorMode=='dark' else 'light'}.png"
-        )
-        if os.path.exists(icon_path):
-            self.edit_button.setIcon(QtGui.QIcon(icon_path))
+        self.edit_button.setIcon(UIUtils.icon(icon_name))
 
         # Toggle the main input area
         self.input_area.setVisible(not self.edit_mode)
@@ -777,50 +678,48 @@ class CustomPopupWindow(QtWidgets.QWidget):
         for btn in self.button_widgets:
             try:
                 btn.clicked.disconnect()
-            except:
+            except (RuntimeError, TypeError):
                 pass
 
             if not self.edit_mode:
+                btn.set_edit_mode_style(False)
                 btn.clicked.connect(partial(self.on_generic_instruction, btn.key))
                 if hasattr(btn, 'icon_container') and btn.icon_container:
                     btn.icon_container.deleteLater()
                     btn.icon_container = None
             else:
+                btn.set_edit_mode_style(True)
                 self.add_edit_delete_icons(btn)
-
-            btn.setStyleSheet(btn.base_style)
 
         # Rebuild grid layout
         self.rebuild_grid_layout()
 
 
     def on_reset_clicked(self):
-        """
-        Reset `options.json` to the DEFAULT_OPTIONS_JSON, then show message & restart.
-        """
-        confirm_box = QtWidgets.QMessageBox()
-        confirm_box.setWindowTitle("Confirm Reset to Defaults & Quit?")
-        confirm_box.setText("To reset the buttons to their original configuration, Writing Tools would need to quit, so you'd need to relaunch Writing Tools.exe.\nAre you sure you want to continue?")
+        """Reset options.json to the built-in defaults and apply it live."""
+        confirm_box = QtWidgets.QMessageBox(self)
+        confirm_box.setWindowTitle("Reset Buttons to Defaults")
+        confirm_box.setText(
+            "Reset the buttons to their original configuration?\n\n"
+            "Your custom buttons and instructions will be removed. "
+            "This takes effect immediately."
+        )
         confirm_box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
         confirm_box.setDefaultButton(QtWidgets.QMessageBox.No)
-        
-        if confirm_box.exec_() == QtWidgets.QMessageBox.Yes:
-            try:
-                logging.debug('Resetting to default options.json')
-                default_data = json.loads(DEFAULT_OPTIONS_JSON)
-                self.save_options(default_data)
 
-                # Save and quit
-                self.app.load_options()
-                self.close()
-                QtCore.QTimer.singleShot(100, self.app.exit_app)
-            
-            except Exception as e:
-                logging.error(f"Error resetting options.json: {e}")
-                error_msg = QtWidgets.QMessageBox()
-                error_msg.setWindowTitle("Error")
-                error_msg.setText(f"An error occurred while resetting: {str(e)}")
-                error_msg.exec_()
+        if confirm_box.exec_() != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            logging.debug('Resetting to default options.json')
+            self.save_options(get_default_options())
+            self._apply_options_and_rebuild()
+        except Exception as e:
+            logging.error(f"Error resetting options.json: {e}")
+            QtWidgets.QMessageBox.warning(
+                self, "Error",
+                f"An error occurred while resetting: {e}",
+            )
 
     def _validate_hotkey(self, hotkey, exclude_button=None):
         """
@@ -860,7 +759,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
             )
 
         # Conflict with another button's hotkey.
-        data = self.load_options()
+        data = self._live_options()
         for k, v in data.items():
             if k == exclude_button:
                 continue
@@ -903,32 +802,21 @@ class CustomPopupWindow(QtWidgets.QWidget):
                 # Re-open the dialog with the user's entries preserved so
                 # they can fix the hotkey instead of starting over.
                 continue
-            data = self.load_options()
+            data = dict(self._live_options())
             data[bd["name"]] = self._build_button_entry(bd)
             self.save_options(data)
 
-            self.build_buttons_list()
-            self.rebuild_grid_layout()
-
-            self.hide()
-
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quitting to apply button...",
-                "Writing Tools needs to relaunch to apply your fancy button & will now quit.\nPlease relaunch Writing Tools.exe to see your new button."
-            )
-
-            self.app.load_options()
-            self.close()
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
+            # Apply immediately: the button appears and its hotkey (if any)
+            # becomes live without relaunching the app.
+            self._apply_options_and_rebuild()
             return
 
 
     def edit_button_clicked(self, btn):
         """User clicked the small pencil icon over a button."""
         key = btn.key
-        data = self.load_options()
-        bd = data[key]
+        data = self._live_options()
+        bd = dict(data[key])
         bd["name"] = key
 
         dialog = ButtonEditDialog(self, bd)
@@ -940,74 +828,76 @@ class CustomPopupWindow(QtWidgets.QWidget):
             if not ok:
                 QtWidgets.QMessageBox.warning(self, "Invalid hotkey", err)
                 continue
-            data = self.load_options()
+            data = dict(self._live_options())
             existing = data.get(key)
             if new_data["name"] != key:
                 del data[key]
             data[new_data["name"]] = self._build_button_entry(new_data, existing=existing)
             self.save_options(data)
 
-            self.build_buttons_list()
-            self.rebuild_grid_layout()
-
-            self.hide()
-
-            # Show message about relaunch requirement
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quitting to apply changes to this button...",
-                "Writing Tools needs to relaunch to apply your changes & will now quit.\nPlease relaunch Writing Tools.exe to see your changes."
-            )
-
-            # Save and quit
-            self.app.load_options()
-            self.close()
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
+            self._apply_options_and_rebuild()
             return
 
     def delete_button_clicked(self, btn):
-        """Handle deletion of a button."""
+        """Delete a button and apply the change immediately."""
         key = btn.key
-        confirm = QtWidgets.QMessageBox()
-        confirm.setWindowTitle("Confirm Delete & Quit?")
-        confirm.setText(f"To delete the '{key}' button, Writing Tools would need to quit, so you'd need to relaunch Writing Tools.exe.\nAre you sure you want to continue?")
+        confirm = QtWidgets.QMessageBox(self)
+        confirm.setWindowTitle("Delete Button")
+        confirm.setText(
+            f"Delete the '{key}' button?\n\n"
+            "You can restore the default buttons with the reset icon."
+        )
         confirm.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
         confirm.setDefaultButton(QtWidgets.QMessageBox.No)
-        
-        if confirm.exec_() == QtWidgets.QMessageBox.Yes:
-            try:
-                data = self.load_options()
-                del data[key]
-                self.save_options(data)
 
-                # Clean up UI elements
-                for btn_ in self.button_widgets[:]:
-                    if btn_.key == key:
-                        if hasattr(btn_, 'icon_container') and btn_.icon_container:
-                            btn_.icon_container.deleteLater()
-                        btn_.deleteLater()
-                        self.button_widgets.remove(btn_)
-                
-                self.app.load_options()
-                self.close()
-                QtCore.QTimer.singleShot(100, self.app.exit_app)
-                
-            except Exception as e:
-                logging.error(f"Error deleting button: {e}")
-                error_msg = QtWidgets.QMessageBox()
-                error_msg.setWindowTitle("Error")
-                error_msg.setText(f"An error occurred while deleting the button: {str(e)}")
-                error_msg.exec_()
+        if confirm.exec_() != QtWidgets.QMessageBox.Yes:
+            return
+
+        try:
+            data = dict(self._live_options())
+            data.pop(key, None)
+            self.save_options(data)
+
+            # Clean up this button and rebuild in place — no relaunch.
+            for btn_ in self.button_widgets[:]:
+                if btn_.key == key:
+                    if getattr(btn_, "icon_container", None):
+                        btn_.icon_container.deleteLater()
+                    btn_.deleteLater()
+                    self.button_widgets.remove(btn_)
+
+            self._apply_options_and_rebuild()
+        except Exception as e:
+            logging.error(f"Error deleting button: {e}")
+            QtWidgets.QMessageBox.warning(
+                self, "Error",
+                f"An error occurred while deleting the button: {e}",
+            )
 
     def update_json_from_grid(self):
         """
         Called after a drop reorder. Reflect the new order in options.json,
         so that user's custom arrangement persists.
+
+        Does nothing when the order already matches, so leaving edit mode
+        without dragging no longer rewrites the file.
         """
-        data = self.load_options()
-        new_data = {"Custom": data["Custom"]} if "Custom" in data else {}
-        for b in self.button_widgets:
-            new_data[b.key] = data[b.key]
+        data = self._live_options()
+        new_data = {}
+        if isinstance(data.get("Custom"), dict):
+            new_data["Custom"] = data["Custom"]
+        for button in self.button_widgets:
+            if button.key in data:
+                new_data[button.key] = data[button.key]
+        if not new_data:
+            return
+        # "Custom" is stored out of the grid, so only its presence matters —
+        # compare the actual button order. Without a drag it is unchanged and
+        # the file is left alone.
+        current_order = [key for key in data if key != "Custom"]
+        new_order = [key for key in new_data if key != "Custom"]
+        if new_order == current_order:
+            return
         self.save_options(new_data)
 
     def on_custom_change(self):

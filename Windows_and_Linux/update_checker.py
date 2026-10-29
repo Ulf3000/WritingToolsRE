@@ -55,12 +55,17 @@ class UpdateChecker:
             return False
             
         update_available = latest_version > CURRENT_VERSION
-        
-        # Always update config with fresh status
-        if "update_available" in self.app.config or update_available:
-            self.app.config["update_available"] = update_available
-            self.app.save_config(self.app.config)
-            
+
+        # Only touch config.json when the status actually changed; writing on
+        # every launch is pointless disk I/O and bumps the file's mtime.
+        try:
+            if isinstance(self.app.config, dict):
+                if self.app.config.get("update_available") != update_available:
+                    self.app.config["update_available"] = update_available
+                    self.app.save_config(self.app.config)
+        except Exception as e:
+            logging.error(f"Could not store update status: {e}")
+
         return update_available
 
     def check_updates_async(self):

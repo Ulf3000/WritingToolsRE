@@ -1,25 +1,35 @@
 import gettext
-import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
 
-import darkdetect
 import pyperclip
 import ui.AboutWindow
 import ui.CustomPopupWindow
 import ui.OnboardingWindow
 import ui.ResponseWindow
 import ui.SettingsWindow
-from aiprovider import GeminiProvider, OllamaProvider, OpenAICompatibleProvider, obfuscate_api_key
+from aiprovider import create_providers, obfuscate_api_key
+from apputils import (
+    app_path,
+    atomic_write_json,
+    backup_corrupt_file,
+    data_path,
+    get_app_dir,
+    read_json,
+    resource_path,
+)
+from defaults import get_default_options
 from pynput import keyboard as pykeyboard
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QLocale, Signal, Slot
 from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
+from ui.UIUtils import UIUtils
 from update_checker import UpdateChecker
 
 _ = gettext.gettext
@@ -31,6 +41,7 @@ class _SelectedTextHolder:
     `process_option_thread`. The capture thread sets `text` and signals
     `ready` once done.
     """
+
     __slots__ = ("text", "ready")
 
     def __init__(self):
@@ -39,32 +50,52 @@ class _SelectedTextHolder:
 
 
 class WritingToolApp(QtWidgets.QApplication):
-    """
-    The main application class for Writing Tools.
-    """
-    output_ready_signal = Signal(str)
-    show_message_signal = Signal(str, str)  # a signal for showing message boxes
-    hotkey_triggered_signal = Signal()
-    followup_response_signal = Signal(str)
+    """The main application class for Writing Tools."""
 
+    output_ready_signal = Signal(str)
+    show_message_signal = Signal(str, str)  # title, message
+    hotkey_triggered_signal = Signal()
+
+    # Minimum time between two hotkey activations. Prevents key-repeat from
+    # opening/closing the popup dozens of times.
+    HOTKEY_DEBOUNCE_SECONDS = 0.25
 
     def __init__(self, argv):
         super().__init__(argv)
+        # Apply the shared theme before any window exists, so even the first
+        # window gets the palette and stylesheet.
+        UIUtils.apply_app_theme(self)
         self.current_response_window = None
-        logging.debug('Initializing WritingToolApp')
+        self._shutting_down = False
+        self._config_lock = threading.RLock()
+        self._last_hotkey_time = 0.0
+
+        logging.debug("Initializing WritingToolApp")
         self.output_ready_signal.connect(self.replace_text)
         self.show_message_signal.connect(self.show_message_box)
         self.hotkey_triggered_signal.connect(self.on_hotkey_pressed)
+
         self.config = None
-        self.config_path = None
+        self.config_path = app_path("config.json")
         self.load_config()
 
         # Run any pending config migrations in a single pass (single restart).
         self._migrate_config()
 
         self.options = None
-        self.options_path = None
+        self.options_path = data_path("options.json")
+        # Live-reload bookkeeping (see _setup_options_watcher). These must
+        # exist before load_options/save_options are touched.
+        self._options_watcher = None
+        self._options_reload_timer = None
+        self._options_poll_timer = None
+        self._options_signature = None
+        self._options_reload_attempts = 0
         self.load_options()
+        self._options_signature = self._options_file_signature(
+            self.options_path
+        )
+
         self.onboarding_window = None
         self.popup_window = None
         self.tray_icon = None
@@ -77,72 +108,92 @@ class WritingToolApp(QtWidgets.QApplication):
         self.hotkey_listener = None
         self.paused = False
         self.toggle_action = None
+        self.current_provider = None
+        # The scale the running Qt process actually uses. main.py sets
+        # QT_SCALE_FACTOR before QApplication exists; Settings compares
+        # against this (not just the saved config) so "Later" does not hide
+        # a pending restart.
+        self.active_ui_scale = self._read_active_ui_scale()
 
         # Holder for the user's selected text. Populated asynchronously by a
-        # background thread so the popup can show instantly — see `_show_popup`
-        # and `_fire_ctrl_c_and_capture_async`. The lock serializes Ctrl+C
-        # captures across rapid hotkey presses so two captures don't fight
-        # over the clipboard at once.
+        # background thread so the popup can show instantly.
         self.current_text_holder = None
+        # Serializes the entire Ctrl+C + clipboard capture cycle. If a second
+        # hotkey arrives while one is in flight we skip it rather than reading
+        # a stale clipboard (which used to paste random text into documents).
         self._capture_lock = threading.Lock()
 
         self._ = gettext.gettext
 
-        # Initialize the ctrl+c hotkey listener
+        # Initialize the Ctrl+C/SIGINT listener/timer.
         self.ctrl_c_timer = None
         self.setup_ctrl_c_listener()
 
-        # Setup available AI providers
-        self.providers = [GeminiProvider(self), OpenAICompatibleProvider(self), OllamaProvider(self)]
+        # Set up all AI providers. A broken optional provider must never stop
+        # the app from starting.
+        self.providers = create_providers(self)
+
+        # Watch options.json so instruction edits (from the popup or an
+        # external editor) are picked up without restarting the app.
+        self._setup_options_watcher()
 
         if not self.config:
-            logging.debug('No config found, showing onboarding')
+            logging.debug("No config found, showing onboarding")
             self.show_onboarding()
         else:
-            logging.debug('Config found, setting up hotkey and tray icon')
-
-            # Initialize the current provider, defaulting to Gemini
-            provider_name = self.config.get('provider', 'Gemini')
-
-            self.current_provider = next((provider for provider in self.providers if provider.provider_name == provider_name), None)
-            if not self.current_provider:
-                logging.warning(f'Provider {provider_name} not found. Using default provider.')
-                self.current_provider = self.providers[0]
-
-            self.current_provider.load_config(self.config.get("providers", {}).get(provider_name, {}))
-
-            self.create_tray_icon()
-            self.register_hotkey()
-
-            try:
-                lang = self.config['locale']
-            except KeyError:
-                lang = None
-            self.change_language(lang)
-
-            # Initialize update checker
-            self.update_checker = UpdateChecker(self)
-            self.update_checker.check_updates_async()
+            logging.debug("Config found, setting up hotkey and tray icon")
+            self._init_configured_app()
 
         self.recent_triggers = []  # Track recent hotkey triggers
         self.TRIGGER_WINDOW = 1.5  # Time window in seconds
         self.MAX_TRIGGERS = 3  # Max allowed triggers in window
 
+    # ------------------------------------------------------------------
+    # Startup
+    # ------------------------------------------------------------------
+
+    def _init_configured_app(self):
+        provider_name = (self.config or {}).get("provider", "Gemini")
+        self.current_provider = next(
+            (p for p in self.providers if p.provider_name == provider_name),
+            None,
+        )
+        if self.current_provider is None:
+            logging.warning("Provider %s not found. Using the default provider.",
+                            provider_name)
+            self.current_provider = self.providers[0]
+
+        # Always load using the resolved provider name, not the (possibly
+        # stale) name from the config file.
+        self.current_provider.load_config(
+            (self.config.get("providers", {}) or {}).get(
+                self.current_provider.provider_name, {}
+            )
+        )
+
+        self.create_tray_icon()
+        self.register_hotkey()
+
+        lang = self.config.get("locale")
+        self.change_language(lang)
+
+        self.update_checker = UpdateChecker(self)
+        self.update_checker.check_updates_async()
+
     def setup_translations(self, lang=None):
         if not lang:
-            lang = QLocale.system().name().split('_')[0]
+            lang = QLocale.system().name().split("_")[0]
 
         try:
             translation = gettext.translation(
-                'messages',
-                localedir=os.path.join(os.path.dirname(__file__), 'locales'),
-                languages=[lang]
+                "messages",
+                localedir=resource_path("locales"),
+                languages=[lang],
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, OSError):
             translation = gettext.NullTranslations()
 
         translation.install()
-        # Update the translation function for all UI components.
         self._ = translation.gettext
         ui.AboutWindow._ = self._
         ui.SettingsWindow._ = self._
@@ -157,191 +208,507 @@ class WritingToolApp(QtWidgets.QApplication):
         self.setup_translations(lang)
         self.retranslate_ui()
 
-        # Update all other windows
         for widget in QApplication.topLevelWidgets():
-            if widget != self and hasattr(widget, 'retranslate_ui'):
-                widget.retranslate_ui()
+            if widget != self and hasattr(widget, "retranslate_ui"):
+                try:
+                    widget.retranslate_ui()
+                except Exception as exc:  # noqa: BLE001
+                    logging.error("Could not retranslate %s: %s", widget, exc)
+
+    # ------------------------------------------------------------------
+    # Hotkey spam protection
+    # ------------------------------------------------------------------
 
     def check_trigger_spam(self):
         """
-        Check if hotkey is being triggered too frequently (3+ times in 1.5 seconds).
-        Returns True if spam is detected.
+        Return True if the hotkey has been pressed too often in a short time.
+
+        Old versions *quit the whole app* when this happened, which users
+        understandably experienced as a random crash. Now we simply ignore
+        the extra presses.
         """
-        current_time = time.time()
-        
-        # Add current trigger
+        current_time = time.monotonic()
         self.recent_triggers.append(current_time)
-        
-        # Remove old triggers outside the window
-        self.recent_triggers = [t for t in self.recent_triggers 
-                            if current_time - t <= self.TRIGGER_WINDOW]
-        
-        # Check if we have too many triggers in the window
+        self.recent_triggers = [
+            t for t in self.recent_triggers
+            if current_time - t <= self.TRIGGER_WINDOW
+        ]
         return len(self.recent_triggers) >= self.MAX_TRIGGERS
 
+    # ------------------------------------------------------------------
+    # Configuration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _read_active_ui_scale():
+        """The scale Qt was started with (1.0 when no factor is set)."""
+        try:
+            return float(os.environ.get("QT_SCALE_FACTOR", "1"))
+        except (TypeError, ValueError):
+            return 1.0
+
     def load_config(self):
-        """
-        Load the configuration file.
-        """
-        self.config_path = os.path.join(os.path.dirname(sys.argv[0]), 'config.json')
-        logging.debug(f'Loading config from {self.config_path}')
-        if os.path.exists(self.config_path):
-            with open(self.config_path, 'r') as f:
-                self.config = json.load(f)
-                logging.debug('Config loaded successfully')
-        else:
-            logging.debug('Config file not found')
+        """Load config.json, tolerating missing or corrupt files."""
+        self.config_path = app_path("config.json")
+        logging.debug("Loading config from %s", self.config_path)
+        try:
+            raw = read_json(self.config_path)
+        except Exception as exc:  # noqa: BLE001 - read_json already guards
+            logging.error("Unexpected error reading config: %s", exc)
+            raw = None
+
+        if raw is None:
+            if os.path.exists(self.config_path):
+                backup_corrupt_file(self.config_path)
             self.config = None
+            logging.debug("Config file not found or unreadable")
+            return
+
+        if not isinstance(raw, dict):
+            logging.error("config.json is not a JSON object; ignoring it")
+            backup_corrupt_file(self.config_path)
+            self.config = None
+            return
+
+        self.config = raw
+        logging.debug("Config loaded successfully")
 
     def _migrate_config(self):
         """
         One-shot config migration. Catches any user up to the current schema
-        (v9) regardless of where they started — v7, v8, or already current —
-        in a single pass with at most one restart.
+        (v11) regardless of where they started — v7, v8, or already current —
+        in a single pass, and continues startup without a restart.
 
         Each version is gated on its own `is_config_file_updated_for_v{N}`
         flag, so re-running this is a no-op once everything's caught up.
-        Bump CURRENT_CONFIG_VERSION and add a `# v{N}` block when adding a
-        new migration step.
-
-        v8 (introduced 2025):
-          • Google removed Gemini 2.0 from the free API → bump model.
-          • Obfuscate plaintext Gemini API keys (defeats Ctrl+F scanning).
-          The custom-model input field didn't exist pre-v8, so any pre-v8
-          model value is safe to overwrite — there's nothing custom to
-          preserve.
-
-        v9 (introduced 2026):
-          • Google deprecated the Gemma 3 family. Migrate every v8 user on a
-            now-deprecated preset to the new default (`gemini-flash-latest`)
-            so they immediately land on the fast experience. They can opt
-            into the unlimited-but-slow Gemma 4 options from the dropdown
-            if they hit the 20/day Flash quota.
-            Preserve custom model values (which DID exist by then) so a user
-            who picked, say, `gemini-3.1-pro-preview` doesn't get reset.
-          • SDK migration to `google-genai` is code-side only; nothing to
-            do in config.
         """
-        CURRENT_CONFIG_VERSION = 9
-        # Default for new installs and migrating users.
-        NEW_DEFAULT_MODEL = 'gemini-flash-latest'
-        # v8 -> v9 model mapping. Every retired preset is bumped to the new
-        # default so users get the fast Flash-tier experience by default.
+        CURRENT_CONFIG_VERSION = 11
+        NEW_DEFAULT_MODEL = "gemini-flash-latest"
         V8_TO_V9_MAP = {
-            'gemma-3-27b-it':           NEW_DEFAULT_MODEL,
-            'gemma-3-4b-it':            NEW_DEFAULT_MODEL,
-            'gemini-flash-lite-latest': NEW_DEFAULT_MODEL,
-            # 'gemini-flash-latest' itself is already current — no entry needed.
+            "gemma-3-27b-it": NEW_DEFAULT_MODEL,
+            "gemma-3-4b-it": NEW_DEFAULT_MODEL,
+            "gemini-flash-lite-latest": NEW_DEFAULT_MODEL,
+        }
+        RETIRED_GEMINI_MODELS = {
+            "gemini-2.5-pro": NEW_DEFAULT_MODEL,
+            "gemini-2.5-flash": NEW_DEFAULT_MODEL,
+            "gemini-2.5-flash-lite": NEW_DEFAULT_MODEL,
+            "gemini-2.5-flash-preview": NEW_DEFAULT_MODEL,
+            "gemini-2.0-flash": NEW_DEFAULT_MODEL,
+            "gemini-2.0-flash-lite": NEW_DEFAULT_MODEL,
+        }
+        # v10: providers retired these model IDs. Without this, an existing
+        # config keeps requesting a dead model even after the defaults in
+        # aiprovider.py are updated.
+        V9_TO_V10_MODELS = {
+            "OpenRouter (Free Models)": {
+                "meta-llama/llama-3.3-70b-instruct:free":
+                    "nvidia/nemotron-3.5-lightning:free",
+                "deepseek/deepseek-r1:free":
+                    "nvidia/nemotron-3.5-lightning:free",
+                "deepseek/deepseek-chat-v3-0324:free":
+                    "nvidia/nemotron-3.5-lightning:free",
+                "google/gemini-2.0-flash-exp:free":
+                    "google/gemma-4-31b-it:free",
+                "qwen/qwen-2.5-72b-instruct:free":
+                    "nvidia/nemotron-3.5-lightning:free",
+                "mistralai/mistral-7b-instruct:free":
+                    "google/gemma-4-31b-it:free",
+                "meta-llama/llama-3.1-8b-instruct:free":
+                    "nvidia/nemotron-3.5-lightning:free",
+            },
+            "Groq (Free Tier)": {
+                "llama-3.3-70b-versatile": "openai/gpt-oss-120b",
+                "llama-3.1-8b-instant": "openai/gpt-oss-120b",
+                "qwen/qwen3-32b": "qwen/qwen3.8-27b",
+                "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
+                "gemma2-9b-it": "openai/gpt-oss-20b",
+            },
+            "Cerebras (Free Tier)": {
+                "llama-3.3-70b": "gpt-oss-120b",
+                "llama3.1-8b": "gpt-oss-120b",
+                "qwen-3-32b": "gpt-oss-120b",
+                "deepseek-r1-distill-llama-70b": "gpt-oss-120b",
+            },
+            "Cohere (Free Trial)": {
+                "command-r-plus-08-2024": "command-a-03-2025",
+                "command-r-08-2024": "command-a-03-2025",
+                "command-light": "command-a-03-2025",
+            },
+            "NVIDIA NIM (Free Credits)": {
+                "meta/llama-3.3-70b-instruct":
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "meta/llama-3.1-8b-instruct":
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "deepseek-ai/deepseek-r1":
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "mistralai/mistral-7b-instruct-v0.3":
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+                "nvidia/llama-3.1-nemotron-70b-instruct":
+                    "nvidia/nemotron-3.5-lightning-30b-a3b",
+            },
+            "SambaNova (Free Tier)": {
+                "Meta-Llama-3.1-8B-Instruct": "Meta-Llama-3.3-70B-Instruct",
+                "DeepSeek-R1-Distill-Llama-70B":
+                    "Meta-Llama-3.3-70B-Instruct",
+                "Qwen2.5-72B-Instruct": "Meta-Llama-3.3-70B-Instruct",
+            },
+            "Zhipu GLM (Free)": {
+                "glm-4-flash": "glm-5.3-flash",
+                "glm-4.5-flash": "glm-5.3-flash",
+                "glm-4-flash-250414": "glm-5.3-flash",
+                "glm-4v-flash": "glm-5.3-flash",
+            },
         }
 
-        # New user (no config yet) — onboarding will create a fresh, current
-        # config; nothing to migrate.
-        if not self.config:
-            logging.debug('No config to migrate (new user)')
+        if not self.config or not isinstance(self.config, dict):
+            logging.debug("No config to migrate (new user)")
             return
 
-        needs_v8 = not self.config.get('is_config_file_updated_for_v8', False)
-        needs_v9 = not self.config.get('is_config_file_updated_for_v9', False)
+        needs_v8 = not self.config.get("is_config_file_updated_for_v8", False)
+        needs_v9 = not self.config.get("is_config_file_updated_for_v9", False)
+        needs_v10 = not self.config.get("is_config_file_updated_for_v10", False)
+        needs_v11 = not self.config.get("is_config_file_updated_for_v11", False)
 
-        if not needs_v8 and not needs_v9:
-            logging.debug('Config already up-to-date, no migration needed')
+        if not needs_v8 and not needs_v9 and not needs_v10 and not needs_v11:
+            logging.debug("Config already up-to-date, no migration needed")
             return
 
-        logging.info(f'Running config migration (needs_v8={needs_v8}, needs_v9={needs_v9})...')
-
-        config_changed = False
-        gemini_config = (
-            self.config.get('providers', {}).get('Gemini (Recommended)')
+        logging.info(
+            "Running config migration "
+            "(needs_v8=%s, needs_v9=%s, needs_v10=%s, needs_v11=%s)...",
+            needs_v8, needs_v9, needs_v10, needs_v11,
         )
+        config_changed = False
+        providers = self.config.get("providers")
+        if not isinstance(providers, dict):
+            providers = {}
+            self.config["providers"] = providers
+        gemini_config = providers.get("Gemini (Recommended)")
 
-        if gemini_config is not None:
-            old_model = gemini_config.get('model_name', '')
+        if isinstance(gemini_config, dict):
+            old_model = gemini_config.get("model_name", "")
 
-            # v8: pre-v8 users didn't have a custom-model field, so we can
-            # bump unconditionally. We skip the historical "v8 default of
-            # gemma-3-27b-it" intermediate stop and jump straight to the
-            # current default.
             if needs_v8:
                 if old_model != NEW_DEFAULT_MODEL:
-                    gemini_config['model_name'] = NEW_DEFAULT_MODEL
-                    logging.info(f'[v8] Bumped Gemini model "{old_model}" -> "{NEW_DEFAULT_MODEL}"')
+                    gemini_config["model_name"] = NEW_DEFAULT_MODEL
+                    logging.info(
+                        '[v8] Bumped Gemini model "%s" -> "%s"',
+                        old_model, NEW_DEFAULT_MODEL,
+                    )
                     config_changed = True
 
-                # Obfuscate the API key. The helper is idempotent — already-
-                # obfuscated keys (with the `enc:` prefix) pass through
-                # unchanged.
-                api_key = gemini_config.get('api_key', '')
+                api_key = gemini_config.get("api_key", "")
                 if api_key:
                     new_key = obfuscate_api_key(api_key)
                     if new_key != api_key:
-                        gemini_config['api_key'] = new_key
-                        logging.info('[v8] Obfuscated plaintext Gemini API key')
+                        gemini_config["api_key"] = new_key
+                        logging.info("[v8] Obfuscated plaintext Gemini API key")
                         config_changed = True
 
-            # v9: only runs for users coming from v8. Preserve tier choice via
-            # the V8_TO_V9_MAP so an unlimited-tier user doesn't get silently
-            # downgraded to a daily-quota model. Custom values (anything not
-            # in the map) are left alone.
             elif needs_v9:
                 new_model = V8_TO_V9_MAP.get(old_model)
                 if new_model is not None and new_model != old_model:
-                    gemini_config['model_name'] = new_model
-                    logging.info(f'[v9] Bumped Gemini model "{old_model}" -> "{new_model}"')
+                    gemini_config["model_name"] = new_model
+                    logging.info(
+                        '[v9] Bumped Gemini model "%s" -> "%s"',
+                        old_model, new_model,
+                    )
                     config_changed = True
 
-        # Stamp every version flag up to current so we never re-run on
-        # subsequent startups, even if no fields actually needed changing
-        # (e.g., a v8 user who'd already picked a custom non-deprecated model).
-        for n in range(8, CURRENT_CONFIG_VERSION + 1):
-            self.config[f'is_config_file_updated_for_v{n}'] = True
+        if needs_v10:
+            # GitHub Models was retired on 30 July 2026 and replaced by
+            # Together AI. Drop the dead entry so the provider list stays clean.
+            if providers.pop("GitHub Models (Free)", None) is not None:
+                logging.info("[v10] Removed retired GitHub Models provider")
+                config_changed = True
+
+            for provider_name, model_map in V9_TO_V10_MODELS.items():
+                provider_config = providers.get(provider_name)
+                if not isinstance(provider_config, dict):
+                    continue
+                key = "model_name" if "Gemini" in provider_name else "api_model"
+                old_model = provider_config.get(key)
+                new_model = model_map.get(old_model)
+                if new_model and new_model != old_model:
+                    provider_config[key] = new_model
+                    logging.info(
+                        '[v10] Bumped %s model "%s" -> "%s"',
+                        provider_name, old_model, new_model,
+                    )
+                    config_changed = True
+
+        if needs_v11:
+            # Gemini 2.5 Flash/Flash-Lite were retired on 20 October 2026, and
+            # Gemini 2.0 is long gone. Existing configs may also carry a cached
+            # live list from before the retirement — prune those entries too so
+            # Settings never shows a model the API no longer accepts.
+            gemini_config = providers.get("Gemini (Recommended)")
+            if isinstance(gemini_config, dict):
+                old_model = str(gemini_config.get("model_name") or "")
+                if old_model.startswith(("gemini-2.5", "gemini-2.0")):
+                    gemini_config["model_name"] = NEW_DEFAULT_MODEL
+                    logging.info(
+                        '[v11] Bumped Gemini model "%s" -> "%s"',
+                        old_model, NEW_DEFAULT_MODEL,
+                    )
+                    config_changed = True
+
+                cached = gemini_config.get("model_options")
+                if isinstance(cached, list):
+                    def _is_retired(entry):
+                        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                            return True
+                        model_id = str(entry[1]).strip()
+                        return (not model_id
+                                or model_id.startswith(("gemini-2.5",
+                                                        "gemini-2.0")))
+                    filtered = [entry for entry in cached if not _is_retired(entry)]
+                    if not filtered:
+                        gemini_config.pop("model_options", None)
+                        gemini_config.pop("model_specs", None)
+                        logging.info("[v11] Cleared stale cached Gemini models")
+                        config_changed = True
+                    elif len(filtered) != len(cached):
+                        gemini_config["model_options"] = filtered
+                        specs = gemini_config.get("model_specs")
+                        if isinstance(specs, dict):
+                            allowed = {str(entry[1]) for entry in filtered}
+                            gemini_config["model_specs"] = {
+                                model_id: spec for model_id, spec in specs.items()
+                                if model_id in allowed
+                            }
+                        logging.info("[v11] Pruned retired cached Gemini models")
+                        config_changed = True
+
+        for number in range(8, CURRENT_CONFIG_VERSION + 1):
+            self.config[f"is_config_file_updated_for_v{number}"] = True
 
         self.save_config(self.config)
-        logging.info('Config migration complete')
+        logging.info("Config migration complete")
 
-        # Single restart popup, regardless of how many versions we jumped.
         if config_changed:
             # Use QMessageBox directly — signals aren't connected yet at this
-            # point in __init__.
+            # point in __init__. The migrated config is already saved and
+            # loaded, so startup continues normally: no restart required.
             QMessageBox.information(
                 None,
-                'Writing Tools Updated',
-                'Writing Tools has just completed an internal update '
-                '(your config.json was migrated to the current format).\n\n'
-                'Please restart Writing Tools.'
+                "Writing Tools Updated",
+                "Writing Tools has updated your settings to the current "
+                "format.\n\nNo restart is needed.",
             )
-            sys.exit(0)
 
     def load_options(self):
-        """
-        Load the options file.
-        """
-        self.options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
-        logging.debug(f'Loading options from {self.options_path}')
-        if os.path.exists(self.options_path):
-            with open(self.options_path, 'r') as f:
-                self.options = json.load(f)
-                logging.debug('Options loaded successfully')
+        """Load options.json, falling back to built-in defaults if needed."""
+        self.options_path = data_path("options.json")
+        signature = self._options_file_signature(self.options_path)
+        if (
+            signature is not None
+            and signature == self._options_signature
+            and isinstance(self.options, dict)
+            and self.options
+        ):
+            # File is untouched since the last load (usually our own save):
+            # keep the in-memory copy instead of parsing it again.
+            return
+        logging.debug("Loading options from %s", self.options_path)
+        raw = read_json(self.options_path)
+        if not isinstance(raw, dict) or not raw:
+            if raw is not None:
+                backup_corrupt_file(self.options_path)
+            logging.warning("Options missing or invalid; using built-in defaults")
+            self.options = get_default_options()
+            return
+
+        # Drop malformed entries instead of letting them crash the popup.
+        sanitized = {}
+        for name, cfg in raw.items():
+            if not isinstance(name, str) or not isinstance(cfg, dict):
+                logging.warning("Ignoring malformed option %r", name)
+                continue
+            if not isinstance(cfg.get("prefix"), str) or not isinstance(
+                cfg.get("instruction"), str
+            ):
+                logging.warning("Ignoring option %r with missing prefix/instruction", name)
+                continue
+            sanitized[name] = cfg
+
+        if not sanitized:
+            logging.warning("No valid options found; using built-in defaults")
+            self.options = get_default_options()
+            return
+        self.options = sanitized
+
+    def save_options(self, options: dict) -> bool:
+        """Atomically save options.json next to the executable."""
+        if not isinstance(options, dict):
+            logging.error("Refusing to save non-dict options")
+            return False
+        path = app_path("options.json")
+        success = atomic_write_json(path, options, indent=2)
+        if success:
+            self.options_path = path
+            self.options = options
+            self._options_signature = self._options_file_signature(path)
+            self._refresh_options_watch()
+        return success
+
+    # ------------------------------------------------------------------
+    # Live options reload ("hotload")
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _options_file_signature(path):
+        """A cheap fingerprint used to ignore redundant watcher events."""
+        try:
+            stat = os.stat(path)
+            return (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            return None
+
+    def _setup_options_watcher(self):
+        """Reload options.json automatically when it changes on disk."""
+        try:
+            watcher = QtCore.QFileSystemWatcher(self)
+            watcher.fileChanged.connect(self._on_options_file_changed)
+            self._options_watcher = watcher
+
+            timer = QtCore.QTimer(self)
+            timer.setSingleShot(True)
+            timer.setInterval(250)
+            timer.timeout.connect(self._reload_options_from_disk)
+            self._options_reload_timer = timer
+
+            # Fallback poll: some editors replace the file in a way that
+            # silently drops the OS watch. A stat() every 2s is free and
+            # keeps hot-reload reliable.
+            poll = QtCore.QTimer(self)
+            poll.setInterval(2000)
+            poll.timeout.connect(self._poll_options_file)
+            poll.start()
+            self._options_poll_timer = poll
+
+            self._refresh_options_watch()
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Could not watch options.json: %s", exc)
+
+    def _refresh_options_watch(self):
+        """(Re)attach the watch — atomic saves replace the file inode."""
+        watcher = getattr(self, "_options_watcher", None)
+        if watcher is None:
+            return
+        try:
+            watched = set(watcher.files())
+            for path in (self.options_path, app_path("options.json")):
+                if path and os.path.exists(path) and path not in watched:
+                    watcher.addPath(path)
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("Could not refresh options watch: %s", exc)
+
+    def _on_options_file_changed(self, _path=None):
+        self._schedule_options_reload()
+
+    def _schedule_options_reload(self):
+        timer = getattr(self, "_options_reload_timer", None)
+        if timer is not None:
+            timer.start()
         else:
-            logging.debug('Options file not found')
-            self.options = None
+            self._reload_options_from_disk()
+
+    def _options_reload_path(self):
+        """The options file the app should be reading right now."""
+        path = data_path("options.json")
+        if os.path.exists(path):
+            return path
+        return getattr(self, "options_path", "") or path
+
+    def _poll_options_file(self):
+        """Cheap fallback for editors that bypass the OS file watch."""
+        path = self._options_reload_path()
+        signature = self._options_file_signature(path)
+        if signature is not None and signature != self._options_signature:
+            self._reload_options_from_disk()
+
+    def _reload_options_from_disk(self):
+        """Apply options.json edits made outside the app (no restart)."""
+        path = self._options_reload_path()
+        signature = self._options_file_signature(path)
+        if signature is not None and signature == self._options_signature:
+            # Nothing new (usually our own save); skip the extra work.
+            self._refresh_options_watch()
+            return
+
+        raw = read_json(path)
+        if not isinstance(raw, dict) or not raw:
+            # Most likely a half-written file. Retry a few times instead of
+            # replacing the user's buttons with defaults mid-save.
+            attempts = getattr(self, "_options_reload_attempts", 0) + 1
+            self._options_reload_attempts = attempts
+            if attempts <= 10:
+                self._schedule_options_reload()
+            else:
+                logging.warning(
+                    "options.json stayed unreadable; keeping the current buttons"
+                )
+            return
+
+        self._options_reload_attempts = 0
+        try:
+            self.apply_options_changes()
+            self._options_signature = signature
+            logging.info("options.json changed on disk; reloaded live")
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Could not reload options.json: %s", exc)
+
+    def apply_options_changes(self, refresh_popup: bool = True):
+        """
+        Reload options.json and re-register per-button hotkeys.
+
+        Called after in-app edits (add/edit/delete/reset button) and by the
+        file watcher, so changes take effect without a relaunch.
+        """
+        self.load_options()
+        path = self._options_reload_path()
+        self._options_signature = self._options_file_signature(path)
+        if self.config:
+            self.register_hotkey()
+        self._refresh_options_watch()
+
+        if not refresh_popup:
+            return
+        popup = getattr(self, "popup_window", None)
+        if popup is not None:
+            try:
+                popup.refresh_from_options()
+            except RuntimeError:
+                # The C++ widget was already destroyed.
+                self.popup_window = None
+            except Exception as exc:  # noqa: BLE001
+                logging.error("Could not refresh the popup: %s", exc)
 
     def save_config(self, config):
-        """
-        Save the configuration file.
-        """
-        with open(self.config_path, 'w') as f:
-            json.dump(config, f, indent=4)
-            logging.debug('Config saved successfully')
-        self.config = config
+        """Atomically save config.json. Safe to call from worker threads."""
+        if not isinstance(config, dict):
+            logging.error("Refusing to save non-dict config")
+            return
+        with self._config_lock:
+            if atomic_write_json(self.config_path, config, indent=4):
+                self.config = config
+                logging.debug("Config saved successfully")
+
+    # ------------------------------------------------------------------
+    # Windows
+    # ------------------------------------------------------------------
 
     def show_onboarding(self):
-        """
-        Show the onboarding window for first-time users.
-        """
-        logging.debug('Showing onboarding window')
+        logging.debug("Showing onboarding window")
         self.onboarding_window = ui.OnboardingWindow.OnboardingWindow(self)
         self.onboarding_window.close_signal.connect(self.exit_app)
         self.onboarding_window.show()
+
+    # ------------------------------------------------------------------
+    # Hotkey registration
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _to_pynput_hotkey(hotkey_str):
@@ -350,103 +717,97 @@ class WritingToolApp(QtWidgets.QApplication):
         pynput's `<ctrl>+j` / `<ctrl>+<alt>+<space>` format. Single-char keys
         stay as-is; multi-char keys (modifiers, named keys) get wrapped in <>.
         """
-        return '+'.join(
-            f'{t}' if len(t) <= 1 else f'<{t}>'
-            for t in hotkey_str.split('+')
+        return "+".join(
+            f"{token}" if len(token) <= 1 else f"<{token}>"
+            for token in (hotkey_str or "").strip().lower().split("+")
+            if token
         )
 
     def start_hotkey_listener(self):
         """
         Build a single `GlobalHotKeys` listener that handles both the main
         Writing Tools shortcut AND any per-button direct hotkeys defined in
-        options.json. Per-button hotkeys fire the corresponding option
-        immediately, skipping the popup.
-
-        On conflict between a button hotkey and the global shortcut (or
-        between two button hotkeys), the first registration wins and the
-        later one is logged and skipped — the listener can't dispatch to
-        two callbacks for the same combination anyway.
+        options.json.
         """
         try:
             if self.hotkey_listener is not None:
-                self.hotkey_listener.stop()
-                self.hotkey_listener = None
+                try:
+                    self.hotkey_listener.stop()
+                except Exception as exc:  # noqa: BLE001
+                    logging.debug("Stopping old hotkey listener: %s", exc)
+                finally:
+                    self.hotkey_listener = None
 
             hotkey_map = {}
+            config = self.config or {}
 
-            # --- Global Writing Tools hotkey ----------------------------------
-            orig_shortcut = self.config.get('shortcut', 'ctrl+space')
+            # --- Global Writing Tools hotkey ---------------------------------
+            orig_shortcut = (config.get("shortcut") or "ctrl+space").strip().lower()
             self.registered_hotkey = orig_shortcut
             try:
                 global_parsed = self._to_pynput_hotkey(orig_shortcut)
-                # Validate by parsing — raises if malformed.
-                pykeyboard.HotKey.parse(global_parsed)
+                if global_parsed:
+                    pykeyboard.HotKey.parse(global_parsed)
 
-                def on_global_activate():
-                    if self.paused:
-                        return
-                    logging.debug('triggered global hotkey')
-                    self.hotkey_triggered_signal.emit()
+                    def on_global_activate():
+                        if self.paused:
+                            return
+                        logging.debug("triggered global hotkey")
+                        self.hotkey_triggered_signal.emit()
 
-                hotkey_map[global_parsed] = on_global_activate
-                logging.debug(f'Registered global hotkey: {global_parsed}')
-            except Exception as e:
-                logging.error(f'Failed to parse global hotkey "{orig_shortcut}": {e}')
+                    hotkey_map[global_parsed] = on_global_activate
+                    logging.debug("Registered global hotkey: %s", global_parsed)
+            except Exception as exc:  # noqa: BLE001
+                logging.error('Failed to parse global hotkey "%s": %s',
+                              orig_shortcut, exc)
 
-            # --- Per-button direct hotkeys ------------------------------------
-            # Custom is excluded — it needs a typed instruction from the user,
-            # so a "fire directly" hotkey doesn't make sense for it.
-            if self.options:
-                for button_name, button_cfg in self.options.items():
-                    if button_name == 'Custom':
-                        continue
-                    raw = (button_cfg.get('hotkey') or '').strip()
-                    if not raw:
-                        continue
-                    try:
-                        parsed = self._to_pynput_hotkey(raw)
-                        # Same validation path as the global shortcut.
-                        pykeyboard.HotKey.parse(parsed)
-                    except Exception as e:
-                        logging.error(
-                            f'Invalid hotkey "{raw}" for button "{button_name}": {e}'
-                        )
-                        continue
-                    if parsed in hotkey_map:
-                        logging.warning(
-                            f'Hotkey "{raw}" for button "{button_name}" '
-                            f'conflicts with an already-registered binding; skipping'
-                        )
-                        continue
-                    hotkey_map[parsed] = self._make_button_hotkey_callback(button_name)
-                    logging.debug(f'Registered button hotkey: {parsed} -> {button_name}')
+            # --- Per-button direct hotkeys -----------------------------------
+            # Custom is excluded — it needs a typed instruction from the user.
+            for button_name, button_cfg in (self.options or {}).items():
+                if button_name == "Custom" or not isinstance(button_cfg, dict):
+                    continue
+                raw = (button_cfg.get("hotkey") or "").strip().lower()
+                if not raw:
+                    continue
+                try:
+                    parsed = self._to_pynput_hotkey(raw)
+                    pykeyboard.HotKey.parse(parsed)
+                except Exception as exc:  # noqa: BLE001
+                    logging.error('Invalid hotkey "%s" for button "%s": %s',
+                                  raw, button_name, exc)
+                    continue
+                if parsed in hotkey_map:
+                    logging.warning(
+                        'Hotkey "%s" for button "%s" conflicts with an '
+                        "already-registered binding; skipping",
+                        raw, button_name,
+                    )
+                    continue
+                hotkey_map[parsed] = self._make_button_hotkey_callback(button_name)
+                logging.debug("Registered button hotkey: %s -> %s",
+                              parsed, button_name)
 
             if not hotkey_map:
-                logging.warning('No hotkeys to register')
+                logging.warning("No hotkeys to register")
                 return
 
             self.hotkey_listener = pykeyboard.GlobalHotKeys(hotkey_map)
             self.hotkey_listener.start()
-        except Exception as e:
-            logging.error(f'Failed to register hotkey listener: {e}')
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Failed to register hotkey listener: %s", exc,
+                          exc_info=True)
 
     def _make_button_hotkey_callback(self, button_name):
         """
         Build a callback that fires `button_name` directly, bypassing the
-        popup. Closes over `button_name` so we can register many distinct
-        callbacks in a single GlobalHotKeys map.
-
-        The actual fire is bounced through the Qt event loop because pynput
-        invokes callbacks on its listener thread; popup/clipboard work needs
-        to happen on the main thread.
+        popup. The actual work is bounced through the Qt event loop because
+        pynput invokes callbacks on its listener thread.
         """
         def callback():
             if self.paused:
                 return
-            logging.debug(f'Direct hotkey fired for button "{button_name}"')
-            # Match the global hotkey's behaviour: cancel any in-flight
-            # request so a new fire doesn't pile up on top of a previous one.
-            if self.current_provider:
+            logging.debug('Direct hotkey fired for button "%s"', button_name)
+            if self.current_provider is not None:
                 self.current_provider.cancel()
                 self.output_queue = ""
             # noinspection PyTypeChecker
@@ -454,653 +815,721 @@ class WritingToolApp(QtWidgets.QApplication):
                 self,
                 "_fire_button_directly",
                 QtCore.Qt.ConnectionType.QueuedConnection,
-                QtCore.Q_ARG(str, button_name)
+                QtCore.Q_ARG(str, button_name),
             )
         return callback
 
     @Slot(str)
     def _fire_button_directly(self, button_name):
-        """
-        Run a button's option without showing the popup — invoked by a
-        per-button direct hotkey. Mirrors the relevant parts of
-        `_show_popup`: set up the async clipboard capture, then hand off
-        to the worker thread (`process_option`) which waits on the holder
-        and dispatches the AI call.
-        """
-        logging.debug(f'Firing button "{button_name}" directly')
+        """Run a button's option without showing the popup."""
+        logging.debug('Firing button "%s" directly', button_name)
 
-        # If the popup is currently visible (e.g., user opened it then
-        # pressed a button hotkey), close it so it doesn't compete.
         if self.popup_window is not None and self.popup_window.isVisible():
             self.popup_window.close()
 
-        # Sanity check: button must still exist in options. Could be stale
-        # if options.json was edited externally between registration and
-        # fire — skip gracefully rather than crash.
         if not self.options or button_name not in self.options:
-            logging.warning(f'Button "{button_name}" no longer exists; ignoring hotkey')
+            logging.warning('Button "%s" no longer exists; ignoring hotkey',
+                            button_name)
             return
 
-        self.current_text_holder = _SelectedTextHolder()
-        self._fire_ctrl_c_and_capture_async(self.current_text_holder)
-
-        # Same worker path as a popup-button click. process_option_thread
-        # waits on the holder, surfaces "Please select text…" if empty,
-        # and routes window-mode options through the response window.
-        self.process_option(button_name)
+        holder = _SelectedTextHolder()
+        self.current_text_holder = holder
+        self._fire_ctrl_c_and_capture_async(holder)
+        self.process_option(button_name, holder=holder)
 
     def register_hotkey(self):
-        """
-        Register the global hotkey for activating Writing Tools.
-        """
-        logging.debug('Registering hotkey')
+        logging.debug("Registering hotkey")
         self.start_hotkey_listener()
-        logging.debug('Hotkey registered')
+        logging.debug("Hotkey registered")
 
     def on_hotkey_pressed(self):
-        """
-        Handle the hotkey press event.
-        """
-        logging.debug('Hotkey pressed')
-        
-        # Check for spam triggers
-        if self.check_trigger_spam():
-            logging.warning('Hotkey spam detected - quitting application')
-            self.exit_app()
+        """Handle the hotkey press event."""
+        logging.debug("Hotkey pressed")
+
+        if self.paused:
             return
-            
-        # Original hotkey handling continues...
-        if self.current_provider:
+
+        now = time.monotonic()
+        if now - self._last_hotkey_time < self.HOTKEY_DEBOUNCE_SECONDS:
+            logging.debug("Ignoring hotkey repeat")
+            return
+        self._last_hotkey_time = now
+
+        if self.check_trigger_spam():
+            logging.warning("Hotkey spam detected - ignoring this press")
+            return
+
+        if self.current_provider is not None:
             logging.debug("Cancelling current provider's request")
             self.current_provider.cancel()
             self.output_queue = ""
 
         # noinspection PyTypeChecker
-        QtCore.QMetaObject.invokeMethod(self, "_show_popup", QtCore.Qt.ConnectionType.QueuedConnection)
+        QtCore.QMetaObject.invokeMethod(
+            self, "_show_popup", QtCore.Qt.ConnectionType.QueuedConnection
+        )
 
     @Slot()
     def _show_popup(self):
         """
-        Show the popup window the moment the hotkey fires, and capture the
-        user's selected text in parallel — popup display no longer waits on
-        the clipboard. The old behaviour gated popup show on a 0.2-0.5s
-        clipboard read, which on slower systems would time out and
-        incorrectly fall back to the chat-only "Ask your AI" UI even when
-        text *was* selected. We now assume text is always selected;
-        `process_option_thread` waits on the holder before kicking off the
-        AI request.
-        """
-        logging.debug('Showing popup window')
+        Show the popup immediately, and capture the selected text in parallel.
 
-        # Fresh holder per popup. Fire Ctrl+C *before* we create the popup
-        # so the keystroke is queued while focus is still on the user's
-        # source app — the actual clipboard read happens in the background.
-        self.current_text_holder = _SelectedTextHolder()
-        self._fire_ctrl_c_and_capture_async(self.current_text_holder)
+        Firing Ctrl+C before the popup is shown keeps focus on the user's
+        source app while the keystroke is processed.
+        """
+        if self.paused:
+            return
+
+        logging.debug("Showing popup window")
+
+        holder = _SelectedTextHolder()
+        self.current_text_holder = holder
+        self._fire_ctrl_c_and_capture_async(holder)
 
         try:
             if self.popup_window is not None:
-                logging.debug('Existing popup window found')
-                if self.popup_window.isVisible():
-                    logging.debug('Closing existing visible popup window')
-                    self.popup_window.close()
-                self.popup_window = None
-            logging.debug('Creating new popup window')
+                logging.debug("Existing popup window found")
+                try:
+                    if self.popup_window.isVisible():
+                        self.popup_window.close()
+                finally:
+                    self.popup_window = None
+
+            logging.debug("Creating new popup window")
             self.popup_window = ui.CustomPopupWindow.CustomPopupWindow(self)
 
-            # Set the window icon
-            icon_path = os.path.join(os.path.dirname(sys.argv[0]), 'icons', 'app_icon.png')
-            if os.path.exists(icon_path): self.setWindowIcon(QtGui.QIcon(icon_path))
-            # Get the screen containing the cursor
+            icon_path = resource_path(os.path.join("icons", "app_icon.png"))
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QtGui.QIcon(icon_path))
+
             cursor_pos = QCursor.pos()
             screen = QGuiApplication.screenAt(cursor_pos)
             if screen is None:
                 screen = QGuiApplication.primaryScreen()
-            screen_geometry = screen.geometry()
-            logging.debug(f'Cursor is on screen: {screen.name()}')
-            logging.debug(f'Screen geometry: {screen_geometry}')
-            # Show the popup to get its size
+            if screen is None:
+                logging.error("No screen available to position the popup")
+                return
+            screen_geometry = screen.availableGeometry()
+
             self.popup_window.show()
             self.popup_window.adjustSize()
-            # Ensure the popup it's focused, even on lower-end machines
-            self.popup_window.activateWindow()
-            QtCore.QTimer.singleShot(100, self.popup_window.custom_input.setFocus)
+            try:
+                self.popup_window.activateWindow()
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("Could not activate popup window: %s", exc)
+            QtCore.QTimer.singleShot(100, self._focus_popup_input)
 
             popup_width = self.popup_window.width()
             popup_height = self.popup_window.height()
-            # Calculate position
             x = cursor_pos.x()
-            y = cursor_pos.y() + 20  # 20 pixels below cursor
-            # Adjust if the popup would go off the right edge of the screen
+            y = cursor_pos.y() + 20
             if x + popup_width > screen_geometry.right():
                 x = screen_geometry.right() - popup_width
-            # Adjust if the popup would go off the bottom edge of the screen
+            if x < screen_geometry.left():
+                x = screen_geometry.left()
             if y + popup_height > screen_geometry.bottom():
-                y = cursor_pos.y() - popup_height - 10  # 10 pixels above cursor
+                y = cursor_pos.y() - popup_height - 10
+            if y < screen_geometry.top():
+                y = screen_geometry.top()
             self.popup_window.move(x, y)
-            logging.debug(f'Popup window moved to position: ({x}, {y})')
-        except Exception as e:
-            logging.error(f'Error showing popup window: {e}', exc_info=True)
+            logging.debug("Popup window moved to position: (%s, %s)", x, y)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Error showing popup window: %s", exc, exc_info=True)
+            if self.popup_window is not None:
+                try:
+                    self.popup_window.close()
+                except Exception:
+                    pass
+                self.popup_window = None
+
+    def _focus_popup_input(self):
+        """Focus the popup's custom input, if the popup still exists."""
+        try:
+            if self.popup_window is not None and self.popup_window.isVisible():
+                self.popup_window.custom_input.setFocus()
+        except RuntimeError:
+            # The underlying C++ widget was already destroyed.
+            self.popup_window = None
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("Could not focus popup input: %s", exc)
 
     def _fire_ctrl_c_and_capture_async(self, holder):
         """
-        Inject Ctrl+C now (must happen while focus is still on the user's
-        source app, before the popup is shown), then poll the clipboard
-        for the result in a background thread. Returns immediately so the
-        popup can display with no perceptible delay.
+        Inject Ctrl+C now (while focus is still on the source app), then poll
+        the clipboard for the result in a background thread.
 
-        Slow systems' clipboard subsystems can take a while to populate
-        after Ctrl+C — that's the whole reason this is async. The polling
-        timeout is generous; an empty result after timeout means the user
-        pressed the hotkey without actually selecting anything, which
-        `process_option_thread` reports as a normal error.
+        The whole operation is serialized by `_capture_lock`. If another
+        capture is already running we return an empty result immediately
+        instead of stealing a stale clipboard value.
         """
+        if not self._capture_lock.acquire(blocking=False):
+            logging.debug("Clipboard capture already in progress; ignoring")
+            holder.text = ""
+            holder.ready.set()
+            return
+
         try:
-            clipboard_backup = pyperclip.paste()
+            clipboard_backup = pyperclip.paste() or ""
         except Exception:
-            clipboard_backup = ''
+            clipboard_backup = ""
 
-        self.clear_clipboard()
-
-        kbrd = pykeyboard.Controller()
         try:
-            kbrd.press(pykeyboard.Key.ctrl.value)
-            kbrd.press('c')
-            kbrd.release('c')
-            kbrd.release(pykeyboard.Key.ctrl.value)
-        except Exception as e:
-            logging.error(f'Error simulating Ctrl+C: {e}')
+            self.clear_clipboard()
+            kbrd = pykeyboard.Controller()
+            kbrd.press(pykeyboard.Key.ctrl)
+            kbrd.press("c")
+            kbrd.release("c")
+            kbrd.release(pykeyboard.Key.ctrl)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Error simulating Ctrl+C: %s", exc)
+            self._capture_lock.release()
+            holder.text = ""
+            holder.ready.set()
+            return
 
         def _poll_clipboard():
-            # Lock so concurrent hotkey presses don't trample each other's
-            # in-flight captures.
-            with self._capture_lock:
-                text = ''
-                try:
-                    deadline = time.time() + 2.0
-                    while time.time() < deadline:
-                        try:
-                            text = pyperclip.paste() or ''
-                        except Exception as e:
-                            logging.error(f'Error reading clipboard during poll: {e}')
-                            text = ''
-                        if text:
-                            break
-                        time.sleep(0.05)
-                    holder.text = text
-                    logging.debug(f'Captured selected text (len={len(text)})')
-                finally:
+            text = ""
+            try:
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
                     try:
-                        pyperclip.copy(clipboard_backup)
-                    except Exception as e:
-                        logging.error(f'Error restoring clipboard: {e}')
-                    holder.ready.set()
+                        text = pyperclip.paste() or ""
+                    except Exception as exc:  # noqa: BLE001
+                        logging.error("Error reading clipboard during poll: %s", exc)
+                        text = ""
+                    if text:
+                        break
+                    time.sleep(0.05)
+                holder.text = str(text)
+                logging.debug("Captured selected text (len=%s)", len(holder.text))
+            finally:
+                try:
+                    pyperclip.copy(clipboard_backup)
+                except Exception as exc:  # noqa: BLE001
+                    logging.error("Error restoring clipboard: %s", exc)
+                holder.ready.set()
+                self._capture_lock.release()
 
         threading.Thread(target=_poll_clipboard, daemon=True).start()
 
     @staticmethod
     def clear_clipboard():
-        """
-        Clear the system clipboard.
-        """
         try:
-            pyperclip.copy('')
-        except Exception as e:
-            logging.error(f'Error clearing clipboard: {e}')
+            pyperclip.copy("")
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Error clearing clipboard: %s", exc)
 
-    def process_option(self, option, custom_change=None):
-        """
-        Spawn a worker thread that waits for the asynchronous clipboard
-        capture and then runs the chosen option. Kept as a thin wrapper so
-        the popup's click handler returns immediately and the GUI thread
-        is never blocked on the clipboard read.
-        """
-        logging.debug(f'Processing option: {option}')
+    # ------------------------------------------------------------------
+    # Options / AI requests
+    # ------------------------------------------------------------------
 
-        # Drop any stale ref so a previous run's late-arriving response can't
-        # land in a now-irrelevant window. The new window (if any) is created
-        # by the worker via `_setup_response_window` once the text is in.
-        if hasattr(self, 'current_response_window'):
-            delattr(self, 'current_response_window')
+    def process_option(self, option, custom_change=None, holder=None):
+        """
+        Spawn a worker thread that waits for the clipboard capture and then
+        runs the chosen option. Returns immediately so the GUI stays smooth.
+        """
+        logging.debug("Processing option: %s", option)
+
+        if not self.options or option not in self.options:
+            self.show_message_signal.emit(
+                "Button Not Found",
+                f'The "{option}" action is no longer available.\n'
+                "It may have been deleted or options.json may be corrupt.",
+            )
+            return
+
+        if self.current_provider is None:
+            self.show_message_signal.emit(
+                "No AI Provider",
+                "No AI provider is configured. Open Settings and choose one.",
+            )
+            return
+
+        if self.current_response_window is not None:
+            try:
+                self.current_response_window.close()
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("Could not close old response window: %s", exc)
+            self.current_response_window = None
+
+        if holder is None:
+            holder = self.current_text_holder
 
         threading.Thread(
             target=self.process_option_thread,
-            args=(option, custom_change),
-            daemon=True
+            args=(option, custom_change, holder),
+            daemon=True,
         ).start()
 
     @Slot(str, str)
     def _setup_response_window(self, option, selected_text):
-        """
-        Open the response window and seed its chat history. Called from
-        `process_option_thread` via `BlockingQueuedConnection` so the
-        worker can rely on the window existing before it dispatches the
-        AI request.
-        """
+        """Open the response window and seed its chat history."""
         self.current_response_window = self.show_response_window(option, selected_text)
         self.current_response_window.chat_history = [
             {
                 "role": "user",
-                "content": f"Original text to {option.lower()}:\n\n{selected_text}"
+                "content": f"Original text to {option.lower()}:\n\n{selected_text}",
             }
         ]
 
-    def process_option_thread(self, option, custom_change=None):
+    def process_option_thread(self, option, custom_change=None, holder=None):
         """
-        Worker: wait for the background clipboard capture to land, then
-        either open a response window (for window-mode options) or set up
-        for inline replacement, and finally run the AI request.
+        Worker: wait for the clipboard capture, open a response window if
+        needed, then run the AI request.
         """
-        logging.debug(f'Starting processing thread for option: {option}')
+        logging.debug("Starting processing thread for option: %s", option)
 
-        # Typically near-instant since the user took time to read the popup
-        # and click. The 3s ceiling is a safety net for genuinely sluggish
-        # systems; if the 2s polling deadline in the capture thread tripped
-        # first, the event is already set and this returns immediately.
-        holder = self.current_text_holder
         if holder is None or not holder.ready.wait(timeout=3.0):
-            logging.warning('Timed out waiting for selected text capture')
-        selected_text = (holder.text if holder else '') or ''
+            logging.warning("Timed out waiting for selected text capture")
+        selected_text = (holder.text if holder else "") or ""
 
         if not selected_text.strip():
-            # The chat-mode fallback that used to fire here was removed when
-            # popup show became instant — we no longer have a way to detect
-            # "user wants to chat" vs "capture failed", so we pick the safer
-            # interpretation and surface the error.
-            self.show_message_signal.emit('Error', 'Please select text to use this option.')
+            self.show_message_signal.emit(
+                "Error", "Please select text to use this option."
+            )
             return
 
-        if self.options[option]['open_in_window']:
-            QtCore.QMetaObject.invokeMethod(
-                self,
-                '_setup_response_window',
-                QtCore.Qt.ConnectionType.BlockingQueuedConnection,
-                QtCore.Q_ARG(str, option),
-                QtCore.Q_ARG(str, selected_text)
+        option_cfg = (self.options or {}).get(option)
+        if not isinstance(option_cfg, dict):
+            self.show_message_signal.emit(
+                "Button Not Found", f'The "{option}" action is no longer available.'
             )
+            return
+
+        open_in_window = bool(option_cfg.get("open_in_window"))
+        if open_in_window:
+            try:
+                # BlockingQueuedConnection means the window exists before we
+                # call the provider, so its chat history is ready for the
+                # initial response.
+                # noinspection PyTypeChecker
+                QtCore.QMetaObject.invokeMethod(
+                    self,
+                    "_setup_response_window",
+                    QtCore.Qt.ConnectionType.BlockingQueuedConnection,
+                    QtCore.Q_ARG(str, option),
+                    QtCore.Q_ARG(str, selected_text),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logging.error("Could not create response window: %s", exc,
+                              exc_info=True)
+                self.show_message_signal.emit(
+                    "Error", "Could not open the response window."
+                )
+                return
+
+            if self.current_response_window is None:
+                logging.error("Response window was not created")
+                return
 
         try:
-            selected_prompt = self.options.get(option, ('', ''))
-            prompt_prefix = selected_prompt['prefix']
-            system_instruction = selected_prompt['instruction']
-            if option == 'Custom':
-                prompt = f"{prompt_prefix}Described change: {custom_change}\n\nText: {selected_text}"
+            prompt_prefix = option_cfg.get("prefix", "")
+            system_instruction = option_cfg.get("instruction", "")
+            if option == "Custom":
+                prompt = (
+                    f"{prompt_prefix}Described change: {custom_change}\n\n"
+                    f"Text: {selected_text}"
+                )
             else:
                 prompt = f"{prompt_prefix}{selected_text}"
 
             self.output_queue = ""
+            logging.debug("Getting response from provider for option: %s", option)
 
-            logging.debug(f'Getting response from provider for option: {option}')
-
-            if self.options[option]['open_in_window']:
-                logging.debug('Getting response for window display')
-                response = self.current_provider.get_response(system_instruction, prompt, return_response=True)
-                logging.debug(f'Got response of length: {len(response) if response else 0}')
-
-                if hasattr(self, 'current_response_window'):
-                    # noinspection PyTypeChecker
-                    QtCore.QMetaObject.invokeMethod(
-                        self.current_response_window,
-                        'set_text',
-                        QtCore.Qt.ConnectionType.QueuedConnection,
-                        QtCore.Q_ARG(str, response)
-                    )
-                    logging.debug('Invoked set_text on response window')
+            if open_in_window:
+                response = self.current_provider.get_response(
+                    system_instruction, prompt, return_response=True
+                )
+                logging.debug("Got response of length: %s",
+                              len(response) if response else 0)
+                window = self.current_response_window
+                if window is not None:
+                    if response:
+                        # noinspection PyTypeChecker
+                        QtCore.QMetaObject.invokeMethod(
+                            window,
+                            "set_text",
+                            QtCore.Qt.ConnectionType.QueuedConnection,
+                            QtCore.Q_ARG(str, response),
+                        )
+                    else:
+                        # The provider already showed a dialog with the real
+                        # reason; give the window a useful final state instead
+                        # of leaving it stuck on "Thinking…".
+                        # noinspection PyTypeChecker
+                        QtCore.QMetaObject.invokeMethod(
+                            window,
+                            "set_error",
+                            QtCore.Qt.ConnectionType.QueuedConnection,
+                            QtCore.Q_ARG(
+                                str,
+                                "The AI provider returned an error. Check "
+                                "Settings and try again.",
+                            ),
+                        )
             else:
-                logging.debug('Getting response for direct replacement')
+                logging.debug("Getting response for direct replacement")
                 self.current_provider.get_response(system_instruction, prompt)
-                logging.debug('Response processed')
+                logging.debug("Response processed")
 
-        except Exception as e:
-            logging.error(f'An error occurred: {e}', exc_info=True)
-
-            if "Resource has been exhausted" in str(e):
-                self.show_message_signal.emit('Error - Rate Limit Hit', 'Whoops! You\'ve hit the per-minute rate limit of the Gemini API. Please try again in a few moments.\n\nIf this happens often, simply switch to a Gemini model with a higher usage limit in Settings.')
-            else:
-                self.show_message_signal.emit('Error', f'An error occurred: {e}')
+        except Exception as exc:  # noqa: BLE001
+            logging.error("An error occurred: %s", exc, exc_info=True)
+            self.show_message_signal.emit(
+                "Error", f"An error occurred:\n\n{str(exc)[:700]}"
+            )
 
     @Slot(str, str)
     def show_message_box(self, title, message):
-        """
-        Show a message box with the given title and message.
-        """
-        QMessageBox.warning(None, title, message)
+        try:
+            QMessageBox.warning(None, title, message)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Could not show message box (%s: %s): %s",
+                          title, message, exc)
 
     def show_response_window(self, option, text):
-        """
-        Show the response in a new window instead of pasting it.
-        """
         response_window = ui.ResponseWindow.ResponseWindow(self, f"{option} Result")
-        response_window.selected_text = text  # Store the text for regeneration
+        response_window.selected_text = text
         response_window.show()
         return response_window
 
     def replace_text(self, new_text):
         """
-        Replaces the text by pasting in the LLM generated text. With "Key Points" and "Summary", invokes a window with the output instead.
+        Paste the model output into the focused app, or append it to the
+        response window for Summary/Key Points/Table.
         """
-        error_message = 'ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST'
+        error_message = "ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST"
 
-        # Confirm new_text exists and is a string
-        if new_text and isinstance(new_text, str):
-            self.output_queue += new_text
-            current_output = self.output_queue.strip()  # Strip whitespace for comparison
-
-            # If the new text is the error message, show a message box
-            if current_output == error_message:
-                self.show_message_signal.emit('Error', 'The text is incompatible with the requested change.')
-                return
-
-            # Check if we're building up to the error message (to prevent partial pasting)
-            if len(current_output) <= len(error_message):
-                clean_current = ''.join(current_output.split())
-                clean_error = ''.join(error_message.split())
-                if clean_current == clean_error[:len(clean_current)]:
-                    return
-
-            logging.debug('Processing output text')
-            try:
-                # For Summary and Key Points, show in response window
-                if hasattr(self, 'current_response_window'):
-                    self.current_response_window.append_text(new_text)
-                    
-                    # If this is the initial response, add it to chat history
-                    if len(self.current_response_window.chat_history) == 1:  # Only original text exists
-                        self.current_response_window.chat_history.append({
-                            "role": "assistant",
-                            "content": self.output_queue.rstrip('\n')
-                        })
-                else:
-                    # For other options, use the original clipboard-based replacement
-                    clipboard_backup = pyperclip.paste()
-                    cleaned_text = self.output_queue.rstrip('\n')
-                    pyperclip.copy(cleaned_text)
-                    
-                    kbrd = pykeyboard.Controller()
-                    def press_ctrl_v():
-                        kbrd.press(pykeyboard.Key.ctrl.value)
-                        kbrd.press('v')
-                        kbrd.release('v')
-                        kbrd.release(pykeyboard.Key.ctrl.value)
-
-                    press_ctrl_v()
-                    time.sleep(0.2)
-                    pyperclip.copy(clipboard_backup)
-
-                if not hasattr(self, 'current_response_window'):
-                    self.output_queue = ""
-
-            except Exception as e:
-                logging.error(f'Error processing output: {e}')
-        else:
-            logging.debug('No new text to process')
-
-    def create_tray_icon(self):
-        """
-        Create the system tray icon for the application.
-        """
-        if self.tray_icon:
-            logging.debug('Tray icon already exists')
+        if not new_text or not isinstance(new_text, str):
+            logging.debug("No new text to process")
             return
 
-        logging.debug('Creating system tray icon')
-        icon_path = os.path.join(os.path.dirname(sys.argv[0]), 'icons', 'app_icon.png')
-        if not os.path.exists(icon_path):
-            logging.warning(f'Tray icon not found at {icon_path}')
-            # Use a default icon if not found
-            self.tray_icon = QtWidgets.QSystemTrayIcon(self)
-        else:
+        self.output_queue += new_text
+        current_output = self.output_queue.strip()
+
+        if current_output == error_message:
+            self.show_message_signal.emit(
+                "Error", "The text is incompatible with the requested change."
+            )
+            self.output_queue = ""
+            return
+
+        # Avoid pasting the sentinel one character at a time as it streams in.
+        if len(current_output) <= len(error_message):
+            clean_current = "".join(current_output.split())
+            clean_error = "".join(error_message.split())
+            if clean_current and clean_error.startswith(clean_current):
+                return
+
+        logging.debug("Processing output text")
+        window = self.current_response_window
+        try:
+            if window is not None:
+                window.append_text(new_text)
+                if len(window.chat_history) == 1:  # Only the original text exists
+                    window.chat_history.append({
+                        "role": "assistant",
+                        "content": self.output_queue.rstrip("\n"),
+                    })
+                return
+
+            # Direct replacement path.
+            cleaned_text = self.output_queue.rstrip("\n")
+            if not cleaned_text:
+                return
+            clipboard_backup = pyperclip.paste() or ""
+            try:
+                pyperclip.copy(cleaned_text)
+                # noinspection PyTypeChecker
+                kbrd = pykeyboard.Controller()
+                kbrd.press(pykeyboard.Key.ctrl)
+                kbrd.press("v")
+                kbrd.release("v")
+                kbrd.release(pykeyboard.Key.ctrl)
+                time.sleep(0.2)
+            finally:
+                try:
+                    pyperclip.copy(clipboard_backup)
+                except Exception as exc:  # noqa: BLE001
+                    logging.error("Error restoring clipboard after paste: %s", exc)
+            self.output_queue = ""
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Error processing output: %s", exc, exc_info=True)
+            self.show_message_signal.emit(
+                "Error", f"Could not insert the AI response:\n\n{str(exc)[:500]}"
+            )
+
+    # ------------------------------------------------------------------
+    # Tray / windows
+    # ------------------------------------------------------------------
+
+    def create_tray_icon(self):
+        if self.tray_icon:
+            logging.debug("Tray icon already exists")
+            return
+
+        logging.debug("Creating system tray icon")
+        if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
+            logging.warning("System tray is not available on this system")
+
+        icon_path = resource_path(os.path.join("icons", "app_icon.png"))
+        if os.path.exists(icon_path):
             self.tray_icon = QtWidgets.QSystemTrayIcon(QtGui.QIcon(icon_path), self)
-        # Set the tooltip (hover name) for the tray icon
-        self.tray_icon.setToolTip("WritingTools")
+        else:
+            logging.warning("Tray icon not found at %s", icon_path)
+            self.tray_icon = QtWidgets.QSystemTrayIcon(self)
+
+        self.tray_icon.setToolTip("Writing Tools")
         self.tray_menu = QtWidgets.QMenu()
         self.tray_icon.setContextMenu(self.tray_menu)
 
         self.update_tray_menu()
         self.tray_icon.show()
-        logging.debug('Tray icon displayed')
+        logging.debug("Tray icon displayed")
 
     def update_tray_menu(self):
-        """
-        Update the tray menu with all menu items, including pause functionality
-        and proper translations.
-        """
+        if self.tray_menu is None:
+            return
         self.tray_menu.clear()
-
-        # Apply dark mode styles using darkdetect
         self.apply_dark_mode_styles(self.tray_menu)
 
-        # Settings menu item
-        settings_action = self.tray_menu.addAction(self._('Settings'))
+        settings_action = self.tray_menu.addAction(self._("Settings"))
         settings_action.triggered.connect(self.show_settings)
 
-        # Pause/Resume toggle action 
-        self.toggle_action = self.tray_menu.addAction(self._('Resume') if self.paused else self._('Pause'))
+        self.toggle_action = self.tray_menu.addAction(
+            self._("Resume") if self.paused else self._("Pause")
+        )
         self.toggle_action.triggered.connect(self.toggle_paused)
 
-        # About menu item
-        about_action = self.tray_menu.addAction(self._('About'))
+        about_action = self.tray_menu.addAction(self._("About"))
         about_action.triggered.connect(self.show_about)
 
-        # Exit menu item
-        exit_action = self.tray_menu.addAction(self._('Exit'))
+        exit_action = self.tray_menu.addAction(self._("Exit"))
         exit_action.triggered.connect(self.exit_app)
-        
+
     def toggle_paused(self):
-        """Toggle the paused state of the application."""
-        logging.debug('Toggle paused state')
+        logging.debug("Toggle paused state")
         self.paused = not self.paused
-        self.toggle_action.setText(self._('Resume') if self.paused else self._('Pause'))
-        logging.debug('App is paused' if self.paused else 'App is resumed')
+        if self.toggle_action is not None:
+            try:
+                self.toggle_action.setText(
+                    self._("Resume") if self.paused else self._("Pause")
+                )
+            except RuntimeError:
+                self.toggle_action = None
+        logging.debug("App is paused" if self.paused else "App is resumed")
 
     @staticmethod
     def apply_dark_mode_styles(menu):
-        """
-        Apply styles to the tray menu based on system theme using darkdetect.
-        """
-        is_dark_mode = darkdetect.isDark()
+        """Match the tray menu to the app palette (Qt's QSS skips tray menus)."""
+        colours = UIUtils.palette()
         palette = menu.palette()
-
-        if is_dark_mode:
-            logging.debug('Tray icon dark')
-            # Dark mode colors
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#2d2d2d"))  # Dark background
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#ffffff"))  # White text
-        else:
-            logging.debug('Tray icon light')
-            # Light mode colors
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#ffffff"))  # Light background
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#000000"))  # Black text
-
+        palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(colours["card"]))
+        palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor(colours["text"]))
         menu.setPalette(palette)
 
-
-    """
-    The function below (process_followup_question) processes follow-up questions in the chat interface for Summary, Key Points, and Table operations.
-
-    This method handles the complex interaction between the UI, chat history, and AI providers:
-
-    1. Chat History Management:
-    - Maintains a list of all messages (original text, summary, follow-ups)
-    - Properly formats roles (user/assistant) for each message
-    - Preserves conversation context across multiple questions (until the Window is closed)
-
-    2. Provider-Specific Handling:
-    a) Gemini:
-        - Converts internal roles to Gemini's user/model format
-        - Uses chat sessions with proper history formatting
-        - Maintains context through chat.send_message()
-    
-    b) OpenAI-compatible:
-        - Uses standard OpenAI message array format
-        - Includes system instruction and full conversation history
-        - Properly maps internal roles to OpenAI roles
-
-    3. Flow:
-    a) User asks follow-up question
-    b) Question is added to chat history
-    c) Full history is formatted for the current provider
-    d) Response is generated while maintaining context
-    e) Response is displayed in chat UI
-    f) New response is added to history for future context
-
-    4. Threading:
-    - Runs in a separate thread to prevent UI freezing
-    - Uses signals to safely update UI from background thread
-    - Handles errors too
-
-    Args:
-        response_window: The ResponseWindow instance managing the chat UI
-        question: The follow-up question from the user
-
-    This implementation is a bit convoluted, but it allows us to manage chat history & model roles across both providers! :3
-    """
+    # ------------------------------------------------------------------
+    # Follow-up chat
+    # ------------------------------------------------------------------
 
     def process_followup_question(self, response_window, question):
-        """
-        Process a follow-up question in the chat window.
-        """
-        logging.debug(f'Processing follow-up question: {question}')
-        
+        """Process a follow-up question in the response window's chat."""
+        logging.debug("Processing follow-up question: %s", question)
+
+        if response_window is None or getattr(response_window, "_closed", False):
+            return
+
         def process_thread():
-            logging.debug('Starting follow-up processing thread')
+            logging.debug("Starting follow-up processing thread")
             try:
                 if not response_window.chat_history:
-                    logging.error("No chat history found")
-                    self.show_message_signal.emit('Error', 'Chat history not found')
+                    self.show_message_signal.emit("Error", "Chat history not found")
                     return
 
-                # Add current question to chat history
                 response_window.chat_history.append({
                     "role": "user",
-                    "content": question
+                    "content": question,
                 })
-                
-                # Get chat history
-                history = response_window.chat_history.copy()
-                
-                # System instruction based on original option
-                system_instruction = "You are a helpful AI assistant. Provide clear and direct responses, maintaining the same format and style as your previous responses. If appropriate, use Markdown formatting to make your response more readable."
-                
-                logging.debug('Sending request to AI provider')
-                
-                # Format conversation differently based on provider
-                if isinstance(self.current_provider, GeminiProvider):
-                    # Gemini takes the system instruction via its config object,
-                    # not as an in-history message. We pass the raw chat history
-                    # (user/assistant turns); GeminiProvider handles role mapping
-                    # and drops any "system" entries internally.
-                    response_text = self.current_provider.get_response(
-                        system_instruction,
-                        history,
-                        return_response=True
+                history = list(response_window.chat_history)
+                system_instruction = (
+                    "You are a helpful AI assistant. Provide clear and direct "
+                    "responses, maintaining the same format and style as your "
+                    "previous responses. If appropriate, use Markdown formatting "
+                    "to make your response more readable."
+                )
+
+                # Every provider knows how to consume OpenAI-style messages:
+                # Gemini maps roles/drops the system entry, Ollama and the
+                # OpenAI-compatible providers accept them as-is.
+                messages = [{"role": "system", "content": system_instruction}]
+                for message in history:
+                    role = message.get("role", "user")
+                    content = message.get("content", "")
+                    messages.append({
+                        "role": "assistant" if role == "assistant" else "user",
+                        "content": content,
+                    })
+
+                response_text = self.current_provider.get_response(
+                    system_instruction, messages, return_response=True
+                )
+
+                if not response_text:
+                    # Provider already surfaced the detailed error dialog.
+                    self._emit_followup(
+                        response_window,
+                        "⚠️ The AI provider returned an error. "
+                        "Check Settings and try again.",
                     )
+                    return
 
-                elif isinstance(self.current_provider, OllamaProvider):  #
-                    # For Ollama, prepare messages with system instruction and history
-                    messages = [{"role": "system", "content": system_instruction}]
-
-                    for msg in history:
-                        messages.append({
-                            "role": msg["role"],
-                            "content": msg["content"]
-                        })
-
-                    # Get response from Ollama
-                    response_text = self.current_provider.get_response(
-                        system_instruction,
-                        messages,
-                        return_response=True
-                    )
-
-                else:
-                    # For OpenAI/compatible providers, prepare messages array, add system message
-                    messages = [{"role": "system", "content": system_instruction}]
-
-                    # Add history messages (including latest question)
-                    for msg in history:
-                        # Convert 'assistant' role to 'assistant' for OpenAI
-                        role = "assistant" if msg["role"] == "assistant" else "user"
-                        messages.append({"role": role, "content": msg["content"]})
-                    
-                    # Get response by passing the full messages array
-                    response_text = self.current_provider.get_response(
-                        system_instruction,
-                        messages,  # Pass messages array directly
-                        return_response=True
-                    )
-
-                logging.debug(f'Got response of length: {len(response_text)}')
-                
-                # Add response to chat history
                 response_window.chat_history.append({
                     "role": "assistant",
-                    "content": response_text
+                    "content": response_text,
                 })
-                
-                # Emit response via signal
-                self.followup_response_signal.emit(response_text)
+                self._emit_followup(response_window, response_text)
 
-            except Exception as e:
-                logging.error(f'Error processing follow-up question: {e}', exc_info=True)
+            except Exception as exc:  # noqa: BLE001
+                logging.error("Error processing follow-up question: %s", exc,
+                              exc_info=True)
+                self.show_message_signal.emit(
+                    "Error", f"An error occurred:\n\n{str(exc)[:700]}"
+                )
+                self._emit_followup(
+                    response_window,
+                    "Sorry, an error occurred while processing your question.",
+                )
 
-                if "Resource has been exhausted" in str(e):
-                    self.show_message_signal.emit('Error - Rate Limit Hit', 'Whoops! You\'ve hit the per-minute rate limit of the Gemini API. Please try again in a few moments.\n\nIf this happens often, simply switch to a Gemini model with a higher usage limit in Settings.')
-                    self.followup_response_signal.emit("Sorry, an error occurred while processing your question.")
-                else:
-                    self.show_message_signal.emit('Error', f'An error occurred: {e}')
-                    self.followup_response_signal.emit("Sorry, an error occurred while processing your question.")
-
-        # Start the thread
         threading.Thread(target=process_thread, daemon=True).start()
 
-    def show_settings(self, providers_only=False):
+    @staticmethod
+    def _emit_followup(response_window, text):
+        """Deliver a follow-up response to the right (still-open) window."""
+        try:
+            if getattr(response_window, "_closed", False):
+                return
+            signal = getattr(response_window, "followup_response_signal", None)
+            if signal is not None:
+                signal.emit(text)
+            else:  # pragma: no cover - compatibility fallback
+                response_window.handle_followup_response(text)
+        except RuntimeError:
+            logging.debug("Response window was deleted before reply arrived")
 
-        """
-        Show the settings window.
-        """
-        logging.debug('Showing settings window')
-        # Always create a new settings window to handle providers_only correctly
-        self.settings_window = ui.SettingsWindow.SettingsWindow(self, providers_only=providers_only)
+    def show_settings(self, providers_only=False):
+        logging.debug("Showing settings window")
+        if self.settings_window is not None:
+            try:
+                self.settings_window.close()
+            except Exception:
+                pass
+            self.settings_window = None
+        self.settings_window = ui.SettingsWindow.SettingsWindow(
+            self, providers_only=providers_only
+        )
         self.settings_window.close_signal.connect(self.exit_app)
         self.settings_window.retranslate_ui()
         self.settings_window.show()
 
-
     def show_about(self):
-        """
-        Show the about window.
-        """
-        logging.debug('Showing about window')
+        logging.debug("Showing about window")
         if not self.about_window:
             self.about_window = ui.AboutWindow.AboutWindow()
         self.about_window.show()
 
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
     def setup_ctrl_c_listener(self):
-        """
-        Listener for Ctrl+C to exit the app.
-        """
-        signal.signal(signal.SIGINT, lambda signum, frame: self.handle_sigint(signum, frame))
-        # This empty timer is needed to make sure that the sigint handler gets checked inside the main loop:
-        # without it, the sigint handle would trigger only when an event is triggered, either by a hotkey combination
-        # or by another GUI event like spawning a new window. With this we trigger it every 100ms with an empy lambda
-        # so that the signal handler gets checked regularly.
-        self.ctrl_c_timer = QtCore.QTimer()
-        self.ctrl_c_timer.start(100)
+        """Listen for Ctrl+C (SIGINT) to exit the app gracefully."""
+        try:
+            signal.signal(
+                signal.SIGINT,
+                lambda signum, frame: self.handle_sigint(signum, frame),
+            )
+        except (ValueError, OSError) as exc:
+            logging.debug("Could not install SIGINT handler: %s", exc)
+
+        # An empty timer keeps the Python signal handler responsive inside
+        # Qt's event loop.
+        self.ctrl_c_timer = QtCore.QTimer(self)
         self.ctrl_c_timer.timeout.connect(lambda: None)
+        self.ctrl_c_timer.start(100)
+
     def handle_sigint(self, signum, frame):
-        """
-        Handle the SIGINT signal (Ctrl+C) to exit the app gracefully.
-        """
         logging.info("Received SIGINT. Exiting...")
         self.exit_app()
 
+    def relaunch(self):
+        """
+        Start a fresh copy of Writing Tools and quit this one.
+
+        Qt's global scale factor can only be changed by recreating the
+        QApplication, so the UI-scale setting uses this instead of asking the
+        user to find the exe again. The new process waits briefly for this
+        one to release the single-instance lock (WT_RELAUNCH).
+        """
+        if self._shutting_down:
+            return False
+        try:
+            if getattr(sys, "frozen", False):
+                command = [sys.executable]
+            else:
+                script = (
+                    os.path.abspath(sys.argv[0])
+                    if sys.argv and sys.argv[0]
+                    else os.path.abspath("main.py")
+                )
+                command = [sys.executable, script]
+
+            env = os.environ.copy()
+            env["WT_RELAUNCH"] = "1"
+            kwargs = {
+                "cwd": get_app_dir(),
+                "env": env,
+                "close_fds": True,
+            }
+            if sys.platform.startswith("win"):
+                kwargs["creationflags"] = (
+                    subprocess.DETACHED_PROCESS
+                    | subprocess.CREATE_NEW_PROCESS_GROUP
+                )
+            logging.info("Relaunching Writing Tools: %s", command)
+            subprocess.Popen(command, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Could not relaunch Writing Tools: %s", exc)
+            try:
+                QMessageBox.warning(
+                    None,
+                    "Writing Tools",
+                    "The new UI scale is saved, but Writing Tools could not "
+                    "restart automatically.\n\n"
+                    "Please close and reopen it to apply the change.\n\n"
+                    f"{exc}",
+                )
+            except Exception:
+                pass
+            return False
+
+        self.exit_app()
+        return True
+
     def exit_app(self):
-        """
-        Exit the application.
-        """
-        logging.debug('Stopping the listener')
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        logging.debug("Stopping the listener")
         if self.hotkey_listener is not None:
-            self.hotkey_listener.stop()
-        logging.debug('Exiting application')
+            try:
+                self.hotkey_listener.stop()
+            except Exception as exc:  # noqa: BLE001
+                logging.debug("Error stopping hotkey listener: %s", exc)
+            finally:
+                self.hotkey_listener = None
+        if self.tray_icon is not None:
+            try:
+                self.tray_icon.hide()
+            except Exception:
+                pass
+        logging.debug("Exiting application")
         self.quit()

@@ -1,9 +1,8 @@
 import logging
 
 from PySide6 import QtCore, QtWidgets
-from PySide6.QtWidgets import QHBoxLayout, QRadioButton
 
-from ui.UIUtils import UIUtils, colorMode
+from ui.UIUtils import UIUtils
 
 _ = lambda x: x
 
@@ -15,7 +14,6 @@ class OnboardingWindow(QtWidgets.QWidget):
         super().__init__()
         self.app = app
         self.shortcut = 'ctrl+space'
-        self.theme = 'gradient'
         self.content_layout = None
         self.shortcut_input = None
         self.init_ui()
@@ -24,13 +22,13 @@ class OnboardingWindow(QtWidgets.QWidget):
     def init_ui(self):
         logging.debug('Initializing onboarding UI')
         self.setWindowTitle(_('Welcome to Writing Tools'))
-        self.resize(600, 500)
+        self.resize(560, 560)
 
         UIUtils.setup_window_and_layout(self)
 
         self.content_layout = QtWidgets.QVBoxLayout()
-        self.content_layout.setContentsMargins(30, 30, 30, 30)
-        self.content_layout.setSpacing(20)
+        self.content_layout.setContentsMargins(24, 22, 24, 22)
+        self.content_layout.setSpacing(12)
 
         self.background.setLayout(self.content_layout)
 
@@ -40,80 +38,52 @@ class OnboardingWindow(QtWidgets.QWidget):
         UIUtils.clear_layout(self.content_layout)
 
         title_label = QtWidgets.QLabel(_("Welcome to Writing Tools")+"!")
-        title_label.setStyleSheet(f"font-size: 24px; font-weight: bold; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
+        UIUtils.set_label_role(title_label, "title")
         self.content_layout.addWidget(title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        features_text = f"""
-        • {_('Instantly optimize your writing with AI by selecting your text and invoking Writing Tools with "ctrl+space", anywhere.')} 
-
-        • {_('Get a summary you can chat with of articles, YouTube videos, or documents by select all text with "ctrl+a"')}
-          {_('(or select the YouTube transcript from its description), invoking Writing Tools, and choosing Summary.')}
-
-        • {_('Chat with AI anytime by invoking Writing Tools without selecting any text.')}
-
-        • {_('Supports an extensive range of AI models:')}
-            - {_('Gemini 2.0')}
-            - {_('ANY OpenAI Compatible API — including local LLMs!')}
-        """
+        features_text = (
+            f"• {_('Instantly optimize your writing with AI by selecting your text and invoking Writing Tools with \"ctrl+space\", anywhere.')}\n\n"
+            f"• {_('Get a summary you can chat with of articles, YouTube videos, or documents by selecting all text with \"ctrl+a\" (or select the YouTube transcript from its description), invoking Writing Tools, and choosing Summary.')}\n\n"
+            f"• {_('Chat with AI anytime by invoking Writing Tools without selecting any text.')}\n\n"
+            f"• {_('Lots of free tiers built in:')}\n"
+            f"    – {_('Google Gemini + Gemma')}\n"
+            f"    – {_('OpenRouter, Groq, Cerebras, Mistral, Together AI')}\n"
+            f"    – {_('Hugging Face, Cohere, SambaNova, NVIDIA NIM')}\n"
+            f"    – {_('Cloudflare Workers AI, Zhipu GLM')}\n"
+            f"    – {_('Click \"Refresh available models\" in Settings to load the current model list for each provider')}\n"
+            f"    – {_('LM Studio and Ollama (fully local & free)')}\n"
+            f"    – {_('ANY OpenAI-compatible API, including OpenCode Console')}"
+        )
         features_label = QtWidgets.QLabel(features_text)
-        features_label.setStyleSheet(f"font-size: 16px; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
+        UIUtils.set_label_role(features_label, "muted")
         features_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
+        features_label.setWordWrap(True)
         self.content_layout.addWidget(features_label)
 
         shortcut_label = QtWidgets.QLabel("Customize your shortcut key (default: \"ctrl+space\"):")
-        shortcut_label.setStyleSheet(f"font-size: 16px; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
+        UIUtils.set_label_role(shortcut_label, "section")
         self.content_layout.addWidget(shortcut_label)
 
         self.shortcut_input = QtWidgets.QLineEdit(self.shortcut)
-        self.shortcut_input.setStyleSheet(f"""
-            font-size: 16px;
-            padding: 5px;
-            background-color: {'#444' if colorMode == 'dark' else 'white'};
-            color: {'#ffffff' if colorMode == 'dark' else '#000000'};
-            border: 1px solid {'#666' if colorMode == 'dark' else '#ccc'};
-        """)
         self.content_layout.addWidget(self.shortcut_input)
 
-        theme_label = QtWidgets.QLabel(_("Choose your theme:"))
-        theme_label.setStyleSheet(f"font-size: 16px; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
-        self.content_layout.addWidget(theme_label)
-
-        theme_layout = QHBoxLayout()
-        gradient_radio = QRadioButton(_("Gradient"))
-        plain_radio = QRadioButton(_("Plain"))
-        gradient_radio.setStyleSheet(f"color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
-        plain_radio.setStyleSheet(f"color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
-        gradient_radio.setChecked(self.theme == 'gradient')
-        plain_radio.setChecked(self.theme == 'plain')
-        theme_layout.addWidget(gradient_radio)
-        theme_layout.addWidget(plain_radio)
-        self.content_layout.addLayout(theme_layout)
-
+        self.content_layout.addStretch()
         next_button = QtWidgets.QPushButton(_('Next'))
-        next_button.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                padding: 10px;
-                font-size: 16px;
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-        """)
-        next_button.clicked.connect(lambda: self.on_next_clicked(gradient_radio.isChecked()))
+        UIUtils.set_variant(next_button, "primary")
+        next_button.clicked.connect(self.on_next_clicked)
         self.content_layout.addWidget(next_button)
 
-    def on_next_clicked(self, is_gradient):
-        self.shortcut = self.shortcut_input.text()
-        self.theme = 'gradient' if is_gradient else 'plain'
-        logging.debug(f'User selected shortcut: {self.shortcut}, theme: {self.theme}')
-        self.app.config = {
+    def on_next_clicked(self):
+        self.shortcut = self.shortcut_input.text().strip() or 'ctrl+space'
+        logging.debug(f'User selected shortcut: {self.shortcut}')
+        # Merge instead of replacing: keeps any migration flags / provider data
+        # if onboarding is ever opened over an existing config.
+        config = self.app.config if isinstance(self.app.config, dict) else {}
+        config.update({
             'shortcut': self.shortcut,
-            'theme': self.theme
-        }
+            'locale': config.get('locale', 'en'),
+        })
+        self.app.config = config
         self.show_api_key_input()
 
     def show_api_key_input(self):

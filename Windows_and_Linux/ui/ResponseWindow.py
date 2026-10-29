@@ -1,13 +1,12 @@
+import html as html_lib
 import logging
-import os
-import sys
 
 import markdown2
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtWidgets import QScrollArea
 
-from ui.UIUtils import UIUtils, colorMode
+from ui.UIUtils import UIUtils
 
 _ = lambda x: x
 
@@ -19,7 +18,7 @@ class MarkdownTextBrowser(QtWidgets.QTextBrowser):
         self.setReadOnly(True)
         self.setOpenExternalLinks(True)
         self.zoom_factor = 1.2
-        self.base_font_size = 14
+        self.base_font_size = 13
         self.is_user_message = is_user_message
         
         # Critical: Remove scrollbars to prevent extra space
@@ -36,67 +35,61 @@ class MarkdownTextBrowser(QtWidgets.QTextBrowser):
         
     def _apply_zoom(self):
         new_size = int(self.base_font_size * self.zoom_factor)
+        palette = UIUtils.palette()
         
-        # Updated stylesheet with table styling
+        # Browser chrome: background, border, padding and font size. Table
+        # styling lives in the rendered HTML (see set_markdown_html), because
+        # Qt's widget stylesheet does not style QTextDocument elements.
         self.setStyleSheet(f"""
             QTextBrowser {{
-                background-color: {('transparent' if self.is_user_message else '#333' if colorMode == 'dark' else 'white')};
-                color: {'#ffffff' if colorMode == 'dark' else '#000000'};
-                border: {('none' if self.is_user_message else '1px solid ' + ('#555' if colorMode == 'dark' else '#ccc'))};
-                border-radius: 8px;
-                padding: 8px;
+                background-color: {('transparent' if self.is_user_message else palette['card'])};
+                color: {palette['text']};
+                border: {('none' if self.is_user_message else '1px solid ' + palette['border'])};
+                border-radius: 6px;
+                padding: 10px;
                 margin: 0px;
                 font-size: {new_size}px;
-                line-height: 1.3;
-                width: 100%;
-            }}
-
-            /* Table styles */
-            table {{
-                border-collapse: collapse;
-                width: 100%;
-                margin: 10px 0;
-            }}
-            
-            th, td {{
-                border: 1px solid {'#555' if colorMode == 'dark' else '#ccc'};
-                padding: 8px;
-                text-align: left;
-            }}
-            
-            th {{
-                background-color: {'#444' if colorMode == 'dark' else '#f5f5f5'};
-                font-weight: bold;
-            }}
-            
-            tr:nth-child(even) {{
-                background-color: {'#3a3a3a' if colorMode == 'dark' else '#f9f9f9'};
-            }}
-            
-            tr:hover {{
-                background-color: {'#484848' if colorMode == 'dark' else '#f0f0f0'};
             }}
         """)
+
+    def set_markdown_html(self, html):
+        """Render Markdown HTML with document-level CSS for tables/code."""
+        p = UIUtils.palette()
+        css = (
+            "<style>"
+            "table { border-collapse: collapse; }"
+            f"th, td {{ border: 1px solid {p['border']}; padding: 5px 8px; "
+            "text-align: left; }}"
+            f"th {{ background-color: {p['hover']}; font-weight: 600; }}"
+            "pre { background-color: transparent; }"
+            "</style>"
+        )
+        self.setHtml(css + html)
         
     def _update_size(self):
-        # Calculate correct document width
-        available_width = self.viewport().width() - 16  # Account for padding
+        """Wrap the document to the current viewport and fix the height."""
+        scroll_area = self.get_scroll_area()
+        if scroll_area is not None and scroll_area.batching:
+            # The scroll area sizes every message in one pass; recalculating
+            # here as well is what made resizing O(n²).
+            return
+
+        available_width = max(1, self.viewport().width() - 16)  # Account for padding
         self.document().setTextWidth(available_width)
-        
+
         # Get precise content height
         doc_size = self.document().size()
         content_height = doc_size.height()
-        
+
         # Add minimal padding for content
         new_height = int(content_height + 16)  # Reduced total padding
-        
+
         if self.minimumHeight() != new_height:
             self.setMinimumHeight(new_height)
             self.setMaximumHeight(new_height)  # Force fixed height
-            
+
             # Update scroll area if needed
-            scroll_area = self.get_scroll_area()
-            if scroll_area:
+            if scroll_area is not None:
                 scroll_area.update_content_height()
                 
     def wheelEvent(self, event):
@@ -160,6 +153,12 @@ class ChatContentScrollArea(QScrollArea):
         super().__init__(parent)
         self.content_widget = None
         self.layout = None
+        self._batching = False
+        self._last_resize_width = -1
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(60)
+        self._resize_timer.timeout.connect(self.refresh_message_widths)
         self.setup_ui()
         
     def setup_ui(self):
@@ -175,10 +174,10 @@ class ChatContentScrollArea(QScrollArea):
         )
         self.setWidget(self.content_widget)
         
-        # Main layout with improved spacing
+        # Main layout with compact spacing
         self.layout = QtWidgets.QVBoxLayout(self.content_widget)
-        self.layout.setSpacing(8)  # Reduced spacing between messages
-        self.layout.setContentsMargins(15, 15, 15, 15)  # Adjusted margins
+        self.layout.setSpacing(6)
+        self.layout.setContentsMargins(12, 12, 12, 12)
         self.layout.addStretch()
         
         # Enhanced scroll area styling
@@ -192,13 +191,13 @@ class ChatContentScrollArea(QScrollArea):
             }
             QScrollBar:vertical {
                 background-color: transparent;
-                width: 12px;
+                width: 10px;
                 margin: 0px;
             }
             QScrollBar::handle:vertical {
-                background-color: rgba(128, 128, 128, 0.5);
+                background-color: rgba(128, 128, 128, 0.45);
                 min-height: 20px;
-                border-radius: 6px;
+                border-radius: 3px;
                 margin: 2px;
             }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
@@ -207,9 +206,15 @@ class ChatContentScrollArea(QScrollArea):
         """)
 
     def add_message(self, text, is_user=False):
-        # Remove bottom stretch
-        self.layout.takeAt(self.layout.count() - 1)
-        
+        # Remove the bottom stretch, but never remove a real message if the
+        # layout was rebuilt or is momentarily out of sync.
+        if self.layout.count() > 0:
+            last_item = self.layout.itemAt(self.layout.count() - 1)
+            if last_item is not None and last_item.spacerItem() is not None:
+                self.layout.takeAt(self.layout.count() - 1)
+
+        text = "" if text is None else str(text)
+
         # Create message container with improved width
         msg_container = QtWidgets.QWidget()
         msg_container.setSizePolicy(
@@ -224,24 +229,34 @@ class ChatContentScrollArea(QScrollArea):
         
         # Create text display with updated width
         text_display = MarkdownTextBrowser(is_user_message=is_user)
-        
-        # Enable tables extension in markdown2
-        html = markdown2.markdown(text, extras=['tables', 'strike'])
-        text_display.setHtml(html)
-        
+
+        # Enable tables/strike extras in markdown2. Broken Markdown should
+        # render as plain text, never crash the chat window.
+        try:
+            html = markdown2.markdown(text, extras=['tables', 'strike'])
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Markdown rendering failed: %s", exc)
+            html = html_lib.escape(text)
+        text_display.set_markdown_html(html)
+
         # Calculate proper text display size using full width
-        text_display.document().setTextWidth(self.width() - 20)
+        text_display.document().setTextWidth(max(1, self.width() - 20))
         doc_size = text_display.document().size()
         text_display.setMinimumHeight(int(doc_size.height() + 16))
-        
+
         msg_layout.addWidget(text_display)
-        
+
         self.layout.addWidget(msg_container)
         self.layout.addStretch()
-        
-        if hasattr(self.parent(), 'current_text_display'):
-            self.parent().current_text_display = text_display
-            
+
+        parent = self.parent()
+        if parent is not None:
+            try:
+                parent.current_text_display = text_display
+            except RuntimeError:
+                pass
+
+
         QtCore.QTimer.singleShot(50, self.post_message_updates)
         
         return text_display
@@ -264,7 +279,7 @@ class ChatContentScrollArea(QScrollArea):
                 total_height += widget_height
         
         # Add spacing between messages and margins
-        total_height += (self.layout.spacing() * (self.layout.count() - 2))  # Message spacing
+        total_height += (self.layout.spacing() * max(0, self.layout.count() - 2))
         total_height += self.layout.contentsMargins().top() + self.layout.contentsMargins().bottom()
         
         # Set minimum height with some padding
@@ -279,27 +294,55 @@ class ChatContentScrollArea(QScrollArea):
         vsb = self.verticalScrollBar()
         vsb.setValue(vsb.maximum())
 
+    # -- bulk layout -----------------------------------------------------
+
+    @property
+    def batching(self) -> bool:
+        """True while messages are being resized in one pass."""
+        return self._batching
+
+    def set_batching(self, active: bool):
+        """Suppress per-message height recalculations during a bulk update."""
+        self._batching = bool(active)
+
+    def refresh_message_widths(self):
+        """Re-wrap and resize every message once (after resize/zoom)."""
+        available_width = max(1, self.width() - 40)  # Account for margins
+        self._batching = True
+        try:
+            for i in range(max(0, self.layout.count() - 1)):  # Skip stretch item
+                item = self.layout.itemAt(i)
+                if item and item.widget():
+                    container = item.widget()
+                    if container.layout() is None or container.layout().itemAt(0) is None:
+                        continue
+                    text_display = container.layout().itemAt(0).widget()
+                    if isinstance(text_display, MarkdownTextBrowser):
+                        # Recalculate text width and height
+                        text_display.document().setTextWidth(available_width)
+                        doc_size = text_display.document().size()
+                        text_display.setMinimumHeight(int(doc_size.height() + 20))
+        finally:
+            self._batching = False
+        self.update_content_height()
+
     def resizeEvent(self, event):
-        """Handle resize events with improved width calculations"""
+        """Coalesce resize events; only the settled width triggers a re-wrap."""
         super().resizeEvent(event)
-        
-        # Update width for all message displays
-        available_width = self.width() - 40  # Account for margins
-        for i in range(self.layout.count() - 1):  # Skip stretch item
-            item = self.layout.itemAt(i)
-            if item and item.widget():
-                container = item.widget()
-                text_display = container.layout().itemAt(0).widget()
-                if isinstance(text_display, MarkdownTextBrowser):
-                    # Recalculate text width and height
-                    text_display.document().setTextWidth(available_width)
-                    doc_size = text_display.document().size()
-                    text_display.setMinimumHeight(int(doc_size.height() + 20))  # Reduced padding
+        width = self.width()
+        if width == self._last_resize_width:
+            return
+        self._last_resize_width = width
+        self._resize_timer.start()
 
 
 class ResponseWindow(QtWidgets.QWidget):
     """Enhanced response window with improved sizing and zoom handling"""
-    
+
+    # Per-window signal: follow-up replies are delivered to the window that
+    # asked the question, even if the user has opened another response window.
+    followup_response_signal = QtCore.Signal(str)
+
     def __init__(self, app, title=_("Response"), parent=None):
         super().__init__(parent)
         self.app = app
@@ -312,6 +355,7 @@ class ResponseWindow(QtWidgets.QWidget):
         self.loading_container = None
         self.chat_area = None
         self.chat_history = []
+        self._closed = False
 
         # Setup thinking animation with full range of dots
         self.thinking_timer = QtCore.QTimer(self)
@@ -322,12 +366,12 @@ class ResponseWindow(QtWidgets.QWidget):
 
         self.init_ui()
         logging.debug('Connecting response signals')
-        self.app.followup_response_signal.connect(self.handle_followup_response)
+        self.followup_response_signal.connect(self.handle_followup_response)
         logging.debug('Response signals connected')
 
         # Set initial size for "Thinking..." state
-        initial_width = 500
-        initial_height = 250
+        initial_width = 480
+        initial_height = 240
         self.resize(initial_width, initial_height)
                 
     def init_ui(self):
@@ -336,30 +380,30 @@ class ResponseWindow(QtWidgets.QWidget):
                           QtCore.Qt.WindowType.WindowCloseButtonHint | 
                           QtCore.Qt.WindowType.WindowMinimizeButtonHint |
                           QtCore.Qt.WindowType.WindowMaximizeButtonHint)
-        self.setMinimumSize(600, 400)
+        self.setMinimumSize(560, 360)
         
         # Main layout setup
         UIUtils.setup_window_and_layout(self)
         content_layout = QtWidgets.QVBoxLayout(self.background)
-        content_layout.setContentsMargins(20, 20, 20, 20)
-        content_layout.setSpacing(10)
+        content_layout.setContentsMargins(16, 14, 16, 14)
+        content_layout.setSpacing(8)
 
         # Top bar with zoom controls
         top_bar = QtWidgets.QHBoxLayout()
+        top_bar.setSpacing(4)
         
         title_label = QtWidgets.QLabel(self.option)
-        title_label.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {'#ffffff' if colorMode == 'dark' else '#333333'};")
+        title_label.setStyleSheet(
+            f"font-size: 15px; font-weight: 600; "
+            f"color: {UIUtils.palette()['text']};"
+        )
         top_bar.addWidget(title_label)
         
         top_bar.addStretch()
 
         # Zoom label with matched size
         zoom_label = QtWidgets.QLabel("Zoom:")
-        zoom_label.setStyleSheet(f"""
-            color: {'#aaaaaa' if colorMode == 'dark' else '#666666'};
-            font-size: 14px;
-            margin-right: 5px;
-        """)
+        UIUtils.set_label_role(zoom_label, "muted")
         top_bar.addWidget(zoom_label)
         
         # Enhanced zoom controls with swapped order
@@ -370,12 +414,8 @@ class ResponseWindow(QtWidgets.QWidget):
         ]
             
         for icon, tooltip, action in zoom_controls:
-            btn = QtWidgets.QPushButton()
-            btn.setIcon(QtGui.QIcon(os.path.join(os.path.dirname(sys.argv[0]), 'icons', icon + ('_dark' if colorMode == 'dark' else '_light') + '.png')))
-            btn.setStyleSheet(self.get_button_style())
-            btn.setToolTip(tooltip)
+            btn = UIUtils.icon_button(icon, tooltip=tooltip, size=26)
             btn.clicked.connect(action)
-            btn.setFixedSize(30, 30)
             top_bar.addWidget(btn)
             
         content_layout.addLayout(top_bar)
@@ -383,12 +423,12 @@ class ResponseWindow(QtWidgets.QWidget):
         # Copy controls with matching text size
         copy_bar = QtWidgets.QHBoxLayout()
         copy_hint = QtWidgets.QLabel(_("Select to copy with formatting"))
-        copy_hint.setStyleSheet(f"color: {'#aaaaaa' if colorMode == 'dark' else '#666666'}; font-size: 14px;")
+        UIUtils.set_label_role(copy_hint, "muted")
         copy_bar.addWidget(copy_hint)
         copy_bar.addStretch()
         
         copy_md_btn = QtWidgets.QPushButton(_("Copy as Markdown"))
-        copy_md_btn.setStyleSheet(self.get_button_style())
+        UIUtils.set_variant(copy_md_btn, "secondary")
         copy_md_btn.clicked.connect(self.copy_first_response)  # Updated to only copy first response
         copy_bar.addWidget(copy_md_btn)
         content_layout.addLayout(copy_bar)
@@ -399,17 +439,14 @@ class ResponseWindow(QtWidgets.QWidget):
         loading_layout.setContentsMargins(0, 0, 0, 0)
         
         self.loading_label = QtWidgets.QLabel(_("Thinking"))
-        self.loading_label.setStyleSheet(f"""
-            QLabel {{
-                color: {'#ffffff' if colorMode == 'dark' else '#333333'};
-                font-size: 18px;
-                padding: 20px;
-            }}
-        """)
+        self.loading_label.setStyleSheet(
+            f"QLabel {{ color: {UIUtils.palette()['muted']}; "
+            f"font-size: 13px; padding: 10px; }}"
+        )
         self.loading_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
         
         loading_inner_container = QtWidgets.QWidget()
-        loading_inner_container.setFixedWidth(180)
+        loading_inner_container.setFixedWidth(160)
         loading_inner_layout = QtWidgets.QHBoxLayout(loading_inner_container)
         loading_inner_layout.setContentsMargins(0, 0, 0, 0)
         loading_inner_layout.addWidget(self.loading_label)
@@ -430,36 +467,16 @@ class ResponseWindow(QtWidgets.QWidget):
         
         # Input area with enhanced styling
         bottom_bar = QtWidgets.QHBoxLayout()
+        bottom_bar.setSpacing(6)
         
         self.input_field = QtWidgets.QLineEdit()
         self.input_field.setPlaceholderText(_("Ask a follow-up question")+'...')
-        self.input_field.setStyleSheet(f"""
-            QLineEdit {{
-                padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
-                border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
-                color: {'#ffffff' if colorMode == 'dark' else '#000000'};
-                font-size: 14px;
-            }}
-        """)
         self.input_field.returnPressed.connect(self.send_message)
         bottom_bar.addWidget(self.input_field)
         
-        send_button = QtWidgets.QPushButton()
-        send_button.setIcon(QtGui.QIcon(os.path.join(os.path.dirname(sys.argv[0]), 'icons', 'send' + ('_dark' if colorMode == 'dark' else '_light') + '.png')))
-        send_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {'#2e7d32' if colorMode == 'dark' else '#4CAF50'};
-                border: none;
-                border-radius: 8px;
-                padding: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#1b5e20' if colorMode == 'dark' else '#45a049'};
-            }}
-        """)
-        send_button.setFixedSize(self.input_field.sizeHint().height(), self.input_field.sizeHint().height())
+        send_button = UIUtils.icon_button(
+            "send", size=30, variant="primary", on_accent=True
+        )
         send_button.clicked.connect(self.send_message)
         bottom_bar.addWidget(send_button)
         
@@ -488,21 +505,6 @@ class ResponseWindow(QtWidgets.QWidget):
         response_text = self.get_first_response_text()
         if response_text:
             QtWidgets.QApplication.clipboard().setText(response_text)
-
-    def get_button_style(self):
-        return f"""
-            QPushButton {{
-                background-color: {'#444' if colorMode == 'dark' else '#f0f0f0'};
-                color: {'#ffffff' if colorMode == 'dark' else '#000000'};
-                border: 1px solid {'#666' if colorMode == 'dark' else '#ccc'};
-                border-radius: 5px;
-                padding: 8px;
-                font-size: 14px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#555' if colorMode == 'dark' else '#e0e0e0'};
-            }}
-        """
 
     def update_thinking_dots(self):
         """Update the thinking animation dots with proper cycling"""
@@ -542,21 +544,26 @@ class ResponseWindow(QtWidgets.QWidget):
             self.layout().activate()
 
     def zoom_all_messages(self, action='in'):
-        """Apply zoom action to all messages in the chat"""
-        for i in range(self.chat_area.layout.count() - 1):  # Skip stretch item
-            item = self.chat_area.layout.itemAt(i)
-            if item and item.widget():
-                text_display = item.widget().layout().itemAt(0).widget()
-                if isinstance(text_display, MarkdownTextBrowser):
-                    if action == 'in':
-                        text_display.zoom_in()
-                    elif action == 'out':
-                        text_display.zoom_out()
-                    else:  # reset
-                        text_display.reset_zoom()
-        
-        # Update layout after zooming
-        self.chat_area.update_content_height()
+        """Apply a zoom action to every message in a single layout pass."""
+        area = self.chat_area
+        area.set_batching(True)
+        try:
+            for i in range(area.layout.count() - 1):  # Skip stretch item
+                item = area.layout.itemAt(i)
+                if item and item.widget():
+                    text_display = item.widget().layout().itemAt(0).widget()
+                    if isinstance(text_display, MarkdownTextBrowser):
+                        if action == 'in':
+                            text_display.zoom_in()
+                        elif action == 'out':
+                            text_display.zoom_out()
+                        else:  # reset
+                            text_display.reset_zoom()
+        finally:
+            area.set_batching(False)
+
+        # Update widths/heights once after all fonts changed.
+        area.refresh_message_widths()
         
     def _adjust_window_height(self):
         """Calculate and set the ideal window height"""
@@ -574,7 +581,7 @@ class ResponseWindow(QtWidgets.QWidget):
                 self.layout().contentsMargins().bottom() +
                 self.input_field.height() +
                 self.layout().spacing() * 5 +
-                200  # Increased from 185 for taller default height
+                170  # compact header/footer allowance
             )
                 
             # Get screen constraints
@@ -592,11 +599,11 @@ class ResponseWindow(QtWidgets.QWidget):
                 max_height
             )
                 
-            # Set reasonable minimum height - increased by 10%
-            final_height = max(600, desired_total_height)  # Increased from 540
+            # Set reasonable minimum height
+            final_height = max(480, desired_total_height)
                 
-            # Set width to 600px
-            final_width = 600
+            # Standard compact window width
+            final_width = 560
                 
             # Update both width and height
             self.resize(final_width, final_height)
@@ -612,61 +619,100 @@ class ResponseWindow(QtWidgets.QWidget):
                 
         except Exception as e:
             logging.error(f"Error adjusting window height: {e}")
-            self.resize(600, 600)  # Updated fallback size
+            self.resize(560, 520)
             self._size_initialized = True
 
     @Slot(str)
     def set_text(self, text):
-        """Set initial response text with enhanced handling"""
-        if not text.strip():
+        """Set the initial response text."""
+        if self._closed:
             return
-                
+        text = "" if text is None else str(text)
+        if not text.strip():
+            self.set_error("The AI provider returned an empty response.")
+            return
+
         # Always ensure chat history is initialized properly
         self.chat_history = [
             {"role": "user", "content": f"{self.option}: {self.selected_text}"},
-            {"role": "assistant", "content": text}  # Add initial response immediately
+            {"role": "assistant", "content": text},  # Add initial response immediately
         ]
-        
+
         self.stop_thinking_animation()
         text_display = self.chat_area.add_message(text)
-        
-        # Update zoom state
-        if hasattr(self.app.config, 'response_window_zoom'):
-            text_display.zoom_factor = self.app.config['response_window_zoom']
-            text_display._apply_zoom()
-        
+
+        # Update zoom state (config is a dict, not an object).
+        try:
+            zoom = (self.app.config or {}).get("response_window_zoom")
+            if isinstance(zoom, (int, float)) and 0.5 <= float(zoom) <= 3.0:
+                text_display.zoom_factor = float(zoom)
+                text_display._apply_zoom()
+        except Exception as exc:  # noqa: BLE001
+            logging.debug("Could not restore response zoom: %s", exc)
+
         QtCore.QTimer.singleShot(100, self._adjust_window_height)
-        
+
+    @Slot(str)
+    def set_error(self, message):
+        """Replace the 'Thinking…' state with a visible, non-stuck error."""
+        if self._closed:
+            return
+        message = message or "An unknown error occurred."
+        self.stop_thinking_animation()
+        self.chat_area.add_message(f"⚠️ **Error**\n\n{message}")
+        if not self.chat_history:
+            self.chat_history = [{"role": "assistant", "content": message}]
+        else:
+            self.chat_history.append({"role": "assistant", "content": message})
+        QtCore.QTimer.singleShot(100, self._adjust_window_height)
+
+    def append_text(self, text):
+        """Append streaming/extra text to the last assistant message."""
+        if self._closed:
+            return
+        text = "" if text is None else str(text)
+        if not text:
+            return
+        if self.chat_history and self.chat_history[-1].get("role") == "assistant":
+            self.chat_history[-1]["content"] += text
+            return
+        self.chat_area.add_message(text)
+        self.chat_history.append({"role": "assistant", "content": text})
+
     @Slot(str)
     def handle_followup_response(self, response_text):
-        """Handle the follow-up response from the AI with improved layout handling"""
+        """Handle the follow-up response from the AI."""
+        if self._closed:
+            return
         if response_text:
             self.loading_label.setVisible(False)
             text_display = self.chat_area.add_message(response_text)
-            
+
             # Maintain consistent zoom level
-            if hasattr(self, 'current_text_display'):
+            if hasattr(self, "current_text_display"):
                 text_display.zoom_factor = self.current_text_display.zoom_factor
                 text_display._apply_zoom()
-            
-            if len(self.chat_history) > 0 and self.chat_history[-1]["role"] != "assistant":
+
+            if self.chat_history and self.chat_history[-1].get("role") != "assistant":
                 self.chat_history.append({
                     "role": "assistant",
-                    "content": response_text
+                    "content": response_text,
                 })
-        
+
         self.stop_thinking_animation()
         self.input_field.setEnabled(True)
-        
+
         # Update window height
         QtCore.QTimer.singleShot(100, self._adjust_window_height)
         
     def send_message(self):
         """Send a new message/question"""
+        if self._closed:
+            return
         message = self.input_field.text().strip()
         if not message:
             return
-            
+
         self.input_field.setEnabled(False)
         self.input_field.clear()
         
@@ -680,28 +726,28 @@ class ResponseWindow(QtWidgets.QWidget):
         self.start_thinking_animation()
         self.app.process_followup_question(self, message)
         
-    def copy_as_markdown(self):
-        """Copy conversation as Markdown"""
-        markdown = ""
-        for msg in self.chat_history:
-            if msg["role"] == "user":
-                markdown += f"**User**: {msg['content']}\n\n"
-            else:
-                markdown += f"**Assistant**: {msg['content']}\n\n"
-                
-        QtWidgets.QApplication.clipboard().setText(markdown)
-        
     def closeEvent(self, event):
-        """Handle window close event"""
-        # Save zoom factor to main config
-        if hasattr(self, 'current_text_display'):
-            self.app.config['response_window_zoom'] = self.current_text_display.zoom_factor
-            self.app.save_config(self.app.config)
+        """Handle window close event."""
+        self._closed = True
+        try:
+            self.thinking_timer.stop()
+            self.followup_response_signal.disconnect(self.handle_followup_response)
+        except (RuntimeError, TypeError):
+            pass
+
+        # Save the zoom factor, but only when it actually changed: this runs
+        # on every window close and used to rewrite config.json each time.
+        try:
+            if hasattr(self, "current_text_display") and isinstance(self.app.config, dict):
+                zoom = float(self.current_text_display.zoom_factor)
+                if self.app.config.get("response_window_zoom") != zoom:
+                    self.app.config["response_window_zoom"] = zoom
+                    self.app.save_config(self.app.config)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Could not save response zoom: %s", exc)
 
         self.chat_history = []
-        
-        if hasattr(self.app, 'current_response_window'):
-            delattr(self.app, 'current_response_window')
-        
+        if getattr(self.app, "current_response_window", None) is self:
+            self.app.current_response_window = None
 
         super().closeEvent(event)

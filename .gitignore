@@ -8,6 +8,13 @@ Windows_and_Linux/config.json
 **/*.mo
 **/pot_files
 
+# Python build artefacts and local environments
+**/.venv/
+**/build/
+**/dist/
+**/*.spec
+**/*.log
+
 # Xcode user-specific data
 **/xcuserdata/
 **/project.xcworkspace/xcuserdata/
