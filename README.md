@@ -7,7 +7,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-2EA043?style=flat-square">
   <a href="https://github.com/Ulf3000/WritingToolsRE/releases"><img alt="Releases" src="https://img.shields.io/badge/releases-download-57606A?style=flat-square"></a>
-  <img alt="AI providers" src="https://img.shields.io/badge/AI%20providers-16-8250DF?style=flat-square">
+  
 </p>
 
 <p align="center"><sub>Maintained by <a href="https://github.com/Ulf3000">Ulf3000</a></sub></p>
@@ -32,7 +32,7 @@ Writing Tools comes with useful presets so you can get started immediately:
 - **Friendly**, **Professional**, **Concise** — adjust tone or length.
 - **Summary**, **Key Points**, **Table** — turn selected content into a structured result.
 
-<img width="401" height="543" alt="image" src="https://github.com/user-attachments/assets/6e64ca95-3091-4539-906a-4ac73e43ee94" />
+<img width="508" height="544" alt="image" src="https://github.com/user-attachments/assets/2ed97f4d-cc9c-4d36-ba04-58c1daf9e123" />
 
 
 The main idea is customisation: **every action is an instruction you control.** Use **Custom** to enter anything you want, such as “translate to French”, “explain this simply”, “make this title case”, or “add comments to this code”. Add your own actions, then rename, change icons, reorder, or remove them. You can also assign actions their own hotkeys.
