@@ -30,7 +30,6 @@ from PySide6.QtCore import QLocale, Signal, Slot
 from PySide6.QtGui import QCursor, QGuiApplication
 from PySide6.QtWidgets import QApplication, QMessageBox
 from ui.UIUtils import UIUtils
-from update_checker import UpdateChecker
 
 _ = gettext.gettext
 
@@ -176,9 +175,6 @@ class WritingToolApp(QtWidgets.QApplication):
 
         lang = self.config.get("locale")
         self.change_language(lang)
-
-        self.update_checker = UpdateChecker(self)
-        self.update_checker.check_updates_async()
 
     def setup_translations(self, lang=None):
         if not lang:

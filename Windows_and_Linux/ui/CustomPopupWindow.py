@@ -398,14 +398,6 @@ class CustomPopupWindow(QtWidgets.QWidget):
         self.build_buttons_list()
         self.rebuild_grid_layout(content_layout)
 
-        # show update notice if applicable
-        if self.app.config.get("update_available", False):
-            update_label = QLabel()
-            update_label.setOpenExternalLinks(True)
-            update_label.setText('<a href="https://github.com/theJayTea/WritingTools/releases" style="color:rgb(255, 0, 0); text-decoration: underline; font-weight: bold;">There\'s an update! :D Download now.</a>')
-            update_label.setStyleSheet("margin-top: 10px;")
-            content_layout.addWidget(update_label, alignment=QtCore.Qt.AlignCenter)
-        
         logging.debug('CustomPopupWindow UI setup complete')
         self.installEventFilter(self)
         QtCore.QTimer.singleShot(250, lambda: self.custom_input.setFocus())

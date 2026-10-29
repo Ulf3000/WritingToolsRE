@@ -1,5 +1,3 @@
-import webbrowser
-
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ui.UIUtils import UIUtils
@@ -46,18 +44,14 @@ class AboutWindow(QtWidgets.QWidget):
         content_layout.addWidget(title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
         about_text = "<p style='text-align: center;'>" + \
-                _("Writing Tools is a free & lightweight tool that helps you improve your writing with AI, similar to Apple's new Apple Intelligence feature. It works with an extensive range of AI LLMs, both online and locally run.") + \
+                _("Writing Tools is a free & lightweight desktop app that improves your writing with AI, similar to Apple's Apple Intelligence. It works with an extensive range of AI LLMs, both online and locally run.") + \
                 """
                      <br>
                 </p>
                 <p style='text-align: center;'>""" + \
-                "<b>" + _("Created with care by Jesai, a high school student.") +"</b><br><br>" + \
-                _("Feel free to check out my other AI app") + ", <a href=\"https://play.google.com/store/apps/details?id=com.jesai.blissai\"><b>Bliss AI</b></a>. " + _("It's a novel AI tutor that's free on the Google Play Store :)") + "<br><br>" + \
-                "<b>" + _("Contact me") +":</b> jesaitarun@gmail.com<br><br>" + \
-                """</p>
-                <p style='text-align: center;'>
-                <b>⭐ """ + \
-                _("Writing Tools would not be where it is today without its <u>amazing</u> contributors") + ":</b><br>" + \
+                "<b>" + _("Maintained by Ulf3000.") + "</b><br><br>" + \
+                _("Source: ") + "<a href=\"https://github.com/Ulf3000/WritingToolsRE\"><b>github.com/Ulf3000/WritingToolsRE</b></a><br><br>" + \
+                "<b>" + _("Writing Tools would not be where it is today without its <u>amazing</u> contributors") + ":</b><br>" + \
                 "<b>1. <a href=\"https://github.com/momokrono\">momokrono</a>:</b><br>" + \
                 _("Added Linux support, switched to the pynput API to improve Windows stability. Added Ollama API support, core logic for customizable buttons, and localization. Fixed misc. bugs and added graceful termination support by handling SIGINT signal.") + "<br>" + \
                 "<b>2. <a href=\"https://github.com/CameronRedmore\">Cameron Redmore (CameronRedmore)</a>:</b><br>" + \
@@ -72,10 +66,9 @@ class AboutWindow(QtWidgets.QWidget):
                 _('Significantly improved the About window, making it scrollable and cleaning things up. Also improved our .gitignore & requirements.txt.') + '</b><br>' + \
                 '<b>7. <a href="https://github.com/Vadim-Karpenko">Vadim Karpenko</a>:</b><br>' + \
                 _('Helped add the start-on-boot setting.')+ "</b><br><br>" + \
-                'If you have a Mac, be sure to check out the <a href="https://github.com/theJayTea/WritingTools#-macos">Writing Tools macOS port</a> by <a href="https://github.com/Aryamirsepasi">Arya Mirsepasi</a>!<br>' + \
                 """</p>
                 <p style='text-align: center;'>
-                <b>Version:</b> 9.0 (Codename: Freedom Tiers)
+                <b>Version:</b> Win v10
                 </p>
                 <p />
                 """
@@ -97,12 +90,6 @@ class AboutWindow(QtWidgets.QWidget):
         scroll_area.viewport().setAutoFillBackground(False)
 
         content_layout.addWidget(scroll_area)
-
-        # Add "Check for updates" button
-        update_button = QtWidgets.QPushButton('Check for updates')
-        UIUtils.set_variant(update_button, "primary")
-        update_button.clicked.connect(self.check_for_updates)
-        content_layout.addWidget(update_button)
 
     def check_for_updates(self):
         """

@@ -1959,7 +1959,7 @@ class OpenRouterProvider(PresetOpenAIProvider):
     KEY_DESCRIPTION = "Paste your OpenRouter API key (sk-or-v1-...)"
     MODEL_PLACEHOLDER = "e.g., nvidia/nemotron-3.5-lightning:free"
     EXTRA_HEADERS = {
-        "HTTP-Referer": "https://github.com/theJayTea/WritingTools",
+        "HTTP-Referer": "https://github.com/Ulf3000/WritingToolsRE",
         "X-Title": "Writing Tools",
     }
     PUBLIC_MODEL_LIST = True
@@ -2487,8 +2487,7 @@ class OllamaProvider(AIProvider):
             "ollama",
             "Ollama Set-up Instructions",
             lambda: webbrowser.open(
-                "https://github.com/theJayTea/WritingTools?tab=readme-ov-file"
-                "#-optional-ollama-local-llm-instructions-for-windows-v7-onwards"
+                "https://github.com/Ulf3000/WritingToolsRE#-local-models-with-ollama"
             ),
         )
 

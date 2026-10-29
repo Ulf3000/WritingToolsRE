@@ -24,7 +24,6 @@ ASSET_ITEMS = [
     "locales",
     "options.json",
     "options_examples.json",
-    "Latest_Version_for_Update_Check.txt",
 ]
 
 # Conda puts the C runtime DLLs used by _ctypes/_ssl/_hashlib/_lzma in
