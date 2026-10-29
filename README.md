@@ -161,17 +161,9 @@ the executable.
 ### 🐧 Linux *(work in progress)*
 
 [Run it from the source code](https://github.com/Ulf3000/WritingToolsRE/blob/main/README's%20Linked%20Content/To%20Run%20Writing%20Tools%20Directly%20from%20the%20Source%20Code.md).
-
-It works well on X11. On Wayland there are two caveats, described in the upstream tracker: it
-[works in XWayland apps](https://github.com/theJayTea/WritingTools/issues/34#issuecomment-2461633556), and it
-[works if you disable Wayland per Flatpak with Flatseal](https://github.com/theJayTea/WritingTools/issues/93#issuecomment-2576511041).
+Not tested!
 
 ## 👀 Tips
-
-### Summarise a YouTube video
-
-Open the video, expand its description, select the transcript, and run **Summary**. No
-transcript in the description? Use the browser extension of your choice to copy it first.
 
 ### Make it work better in Microsoft Word
 
@@ -219,44 +211,20 @@ remembered between launches:
 model can: translate, explain, reformat, add code comments. Any of these can be renamed,
 re-iconed, reordered or deleted — and you can add as many new ones as you like.
 
-## 🦙 Local models with Ollama
-
-Run a model entirely on your machine — no key, no internet, no data leaving the device.
-
-1. [Download and install Ollama](https://ollama.com/download).
-2. Pick a model from the [library](https://ollama.com/library). `llama3.1:8b` is a good
-   starting point (~8 GB VRAM/RAM).
-3. Pull it: `ollama pull llama3.1:8b`.
-4. In Writing Tools, either:
-   - choose **Ollama (For Experts)** and keep the default model, or
-   - choose **OpenAI Compatible (For Experts)** and enter:
-     - **API Key:** `ollama` (any string works for most local servers)
-     - **API Base URL:** `http://localhost:11434/v1`
-     - **API Model:** `llama3.1:8b`
-5. Keep Ollama and Writing Tools running in the background and enjoy offline writing help. 🎉
 
 ## 🐞 Known issues
 
 1. **Hotkey conflicts.** If `ctrl+space` does nothing, another program may already own it.
    Change the shortcut to something like `` ctrl+` `` or `ctrl+j` and press **Save** — it takes
    effect immediately, no restart required.
-2. **Slow first launch.** Antivirus software tends to scan the freshly downloaded executable
-   on first run. After that it starts instantly.
+
 
 ## 🛠️ Run or build from source
 
 - [Run Writing Tools directly from the source code](https://github.com/Ulf3000/WritingToolsRE/blob/main/README's%20Linked%20Content/To%20Run%20Writing%20Tools%20Directly%20from%20the%20Source%20Code.md)
 - [Compile the application yourself](https://github.com/Ulf3000/WritingToolsRE/blob/main/README's%20Linked%20Content/To%20Compile%20the%20Application%20Yourself.md)
 
-> **UI styling:** Writing Tools uses Qt's built-in **Fusion** style plus a small custom
-> stylesheet (`ui/UIUtils.py`) — no extra theme dependency. The custom sheet keeps the app
-> consistent and portable across Windows and Linux.
-
 ## 🌟 Contributors
-
-Writing Tools would not be where it is today without its amazing contributors.
-
-### 🪟🐧 Windows & Linux
 
 **1. [momokrono](https://github.com/momokrono)** — added Linux support, switched to the
 pynput API for better Windows stability, added Ollama support, the core logic for customisable
@@ -279,12 +247,3 @@ anti-aliased and prettier.
 window, made it scrollable, and cleaned up `.gitignore` and `requirements.txt`.
 
 **7. [Vadim Karpenko](https://github.com/Vadim-Karpenko)** — added the start-on-boot setting.
-
-## 📬 Contact
-
-- **Maintainer:** [Ulf3000](https://github.com/Ulf3000)
-- **Bugs & feature requests:** [open an issue](https://github.com/Ulf3000/WritingToolsRE/issues)
-
-## 📄 License
-
-Distributed under the **GNU General Public License v3.0** — see [LICENSE](LICENSE).
