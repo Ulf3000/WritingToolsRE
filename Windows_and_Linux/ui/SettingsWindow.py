@@ -582,6 +582,14 @@ class SettingsWindow(QtWidgets.QWidget):
         self._on_ui_scale_changed(current_scale)
         content_layout.addLayout(scale_row)
 
+        # Thin divider between the general options and the provider section.
+        divider = QtWidgets.QFrame()
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(
+            f"background-color: {UIUtils.palette()['border']}; border: none;"
+        )
+        content_layout.addWidget(divider)
+
         # Provider selection shares its row with the label.
         provider_row = QHBoxLayout()
         provider_row.setSpacing(10)
