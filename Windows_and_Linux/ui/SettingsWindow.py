@@ -557,7 +557,7 @@ class SettingsWindow(QtWidgets.QWidget):
             QtWidgets.QComboBox.InsertPolicy.NoInsert
         )
 
-        current_provider = self.app.config.get('provider', self.app.providers[0].provider_name)
+        current_provider = self.app.config.get('provider', 'Gemini (Recommended)')
         for provider in self.app.providers:
             self.provider_dropdown.addItem(provider.provider_name)
         provider_index = self.provider_dropdown.findText(current_provider)

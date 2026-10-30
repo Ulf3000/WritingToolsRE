@@ -2782,7 +2782,11 @@ def create_providers(app) -> list[AIProvider]:
     # ordered the way users expect (free options at the top).
     tier_order = {"free": 0, "paid": 1, "local": 2}
     ordered_classes = sorted(
-        PROVIDER_CLASSES, key=lambda cls: tier_order.get(getattr(cls, "TIER", "free"), 1)
+        PROVIDER_CLASSES,
+        key=lambda cls: (
+            tier_order.get(getattr(cls, "TIER", "free"), 1),
+            getattr(cls, "PROVIDER_NAME", cls.__name__).lower(),
+        ),
     )
     providers = []
     for provider_class in ordered_classes:

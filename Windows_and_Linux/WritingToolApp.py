@@ -152,7 +152,7 @@ class WritingToolApp(QtWidgets.QApplication):
     # ------------------------------------------------------------------
 
     def _init_configured_app(self):
-        provider_name = (self.config or {}).get("provider", "Gemini")
+        provider_name = (self.config or {}).get("provider", "Gemini (Recommended)")
         self.current_provider = next(
             (p for p in self.providers if p.provider_name == provider_name),
             None,
