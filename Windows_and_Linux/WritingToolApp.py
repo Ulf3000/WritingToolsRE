@@ -8,7 +8,6 @@ import threading
 import time
 
 import pyperclip
-import ui.AboutWindow
 import ui.CustomPopupWindow
 import ui.ResponseWindow
 import ui.SettingsWindow
@@ -98,7 +97,6 @@ class WritingToolApp(QtWidgets.QApplication):
         self.tray_icon = None
         self.tray_menu = None
         self.settings_window = None
-        self.about_window = None
         self.registered_hotkey = None
         self.output_queue = ""
         self.last_replace = 0
@@ -198,7 +196,6 @@ class WritingToolApp(QtWidgets.QApplication):
 
         translation.install()
         self._ = translation.gettext
-        ui.AboutWindow._ = self._
         ui.SettingsWindow._ = self._
         ui.ResponseWindow._ = self._
         ui.CustomPopupWindow._ = self._
@@ -1302,9 +1299,6 @@ class WritingToolApp(QtWidgets.QApplication):
         )
         self.toggle_action.triggered.connect(self.toggle_paused)
 
-        about_action = self.tray_menu.addAction(self._("About"))
-        about_action.triggered.connect(self.show_about)
-
         exit_action = self.tray_menu.addAction(self._("Exit"))
         exit_action.triggered.connect(self.exit_app)
 
@@ -1434,12 +1428,6 @@ class WritingToolApp(QtWidgets.QApplication):
         self.settings_window = ui.SettingsWindow.SettingsWindow(self)
         self.settings_window.retranslate_ui()
         self.settings_window.show()
-
-    def show_about(self):
-        logging.debug("Showing about window")
-        if not self.about_window:
-            self.about_window = ui.AboutWindow.AboutWindow()
-        self.about_window.show()
 
     # ------------------------------------------------------------------
     # Shutdown
