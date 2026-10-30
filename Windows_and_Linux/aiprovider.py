@@ -22,9 +22,8 @@ Key Components:
     • OpenAICompatibleProvider   – Any OpenAI-compatible API
     • OllamaProvider             – Local Ollama server
     • PresetOpenAIProvider       – Shared base for the curated free-tier services
-      - OpenRouter, Groq, Cerebras, Mistral, Together AI, Hugging Face,
-        Cohere, SambaNova, NVIDIA NIM, Cloudflare Workers AI, Zhipu GLM,
-        OpenCode Console, LM Studio
+      - OpenRouter, Groq, Mistral, Cloudflare Workers AI, Zhipu GLM,
+        OpenCode Console, OpenAI, Anthropic, DeepSeek, xAI, LM Studio
     • Every provider can fetch its live model list from Settings, so stale
       hard-coded model IDs do not silently break requests.
 
@@ -2094,27 +2093,6 @@ class GroqProvider(PresetOpenAIProvider):
     )
 
 
-class CerebrasProvider(PresetOpenAIProvider):
-    PROVIDER_NAME = "Cerebras (Free Tier)"
-    FREE_TIER = True
-    BASE_URL = "https://api.cerebras.ai/v1"
-    DEFAULT_MODEL = "gpt-oss-120b"
-    KEY_URL = "https://cloud.cerebras.ai/"
-    LOGO = "cerebras"
-    KEY_DESCRIPTION = "Paste your Cerebras API key (csk-...)"
-    MODEL_PLACEHOLDER = "e.g., gpt-oss-120b"
-    MODELS = [
-        ("⭐ GPT-OSS 120B (free)", "gpt-oss-120b"),
-        ("GLM 4.7 (free)", "zai-glm-4.7"),
-        ("Gemma 4 31B (free)", "gemma-4-31b"),
-    ]
-    DESCRIPTION = (
-        "• Cerebras offers a free API tier with very fast inference.\n"
-        "• Around 1M free tokens per day (limits may change).\n"
-        "• No credit card required to start."
-    )
-
-
 class MistralProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Mistral (Free Tier)"
     FREE_TIER = True
@@ -2135,125 +2113,6 @@ class MistralProvider(PresetOpenAIProvider):
         "• Mistral's free \"Experiment\" plan includes several models.\n"
         "• Good multilingual writing quality.\n"
         "• Free tier is rate-limited; a credit card is not required."
-    )
-
-
-class TogetherAIProvider(PresetOpenAIProvider):
-    PROVIDER_NAME = "Together AI (Free Model)"
-    BASE_URL = "https://api.together.xyz/v1"
-    DEFAULT_MODEL = "Prism-ML/Ternary-Bonsai-27B"
-    KEY_URL = "https://api.together.ai/settings/api-keys"
-    LOGO = "together"
-    KEY_DESCRIPTION = "Paste your Together AI API key"
-    MODEL_PLACEHOLDER = "e.g., Prism-ML/Ternary-Bonsai-27B"
-    MODELS = [
-        ("⭐ Ternary Bonsai 27B (free)", "Prism-ML/Ternary-Bonsai-27B"),
-    ]
-    DESCRIPTION = (
-        "• Together AI currently hosts Ternary Bonsai 27B for free.\n"
-        "• Good for everyday rewriting and summarising.\n"
-        "• Click \"Refresh available models\" after adding your key to see\n"
-        "  the rest of Together's catalog (paid models included)."
-    )
-
-
-class HuggingFaceProvider(PresetOpenAIProvider):
-    PROVIDER_NAME = "Hugging Face (Free Credits)"
-    FREE_TIER = True
-    BASE_URL = "https://router.huggingface.co/v1"
-    DEFAULT_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
-    KEY_URL = "https://huggingface.co/settings/tokens"
-    LOGO = "huggingface"
-    KEY_DESCRIPTION = "Paste your Hugging Face access token (hf_...)"
-    MODEL_PLACEHOLDER = "e.g., meta-llama/Llama-3.3-70B-Instruct"
-    PUBLIC_MODEL_LIST = True
-    MODELS = [
-        ("⭐ Llama 3.3 70B Instruct (free credits)", "meta-llama/Llama-3.3-70B-Instruct"),
-        ("DeepSeek V4.1 Flash (free credits)", "deepseek-ai/DeepSeek-V4.1-Flash"),
-        ("Qwen 3.8 27B (free credits)", "Qwen/Qwen3.8-27B"),
-        ("GLM 5.3 Flash (free credits)", "zai-org/GLM-5.3-Flash"),
-        ("Gemma 4 31B (free credits)", "google/gemma-4-31B-it"),
-    ]
-    DESCRIPTION = (
-        "• Hugging Face's Inference Providers include a small monthly\n"
-        "  free credit allowance for every account.\n"
-        "• Access Llama, Qwen, DeepSeek, Mistral and more through one key.\n"
-        "• A free account is enough; no card required."
-    )
-
-
-class CohereProvider(PresetOpenAIProvider):
-    PROVIDER_NAME = "Cohere (Free Trial)"
-    FREE_TIER = True
-    BASE_URL = "https://api.cohere.ai/compatibility/v1"
-    DEFAULT_MODEL = "command-a-03-2025"
-    KEY_URL = "https://dashboard.cohere.com/api-keys"
-    LOGO = "cohere"
-    KEY_DESCRIPTION = "Paste your Cohere trial API key"
-    MODEL_PLACEHOLDER = "e.g., command-a-03-2025"
-    MODELS_URL = "https://api.cohere.com/v1/models"
-    MODELS = [
-        ("⭐ Command A (free trial)", "command-a-03-2025"),
-        ("Command A+ (free trial)", "command-a-plus"),
-        ("Command A Reasoning (free trial)", "command-a-reasoning"),
-        ("Command R7B (free trial | fast)", "command-r7b-12-2024"),
-        ("North Mini Code (free trial | code)", "north-mini-code"),
-    ]
-    DESCRIPTION = (
-        "• Cohere offers free trial API keys with rate limits.\n"
-        "• Strong at summaries, rewriting and RAG-style tasks.\n"
-        "• Trial keys are free; no card required."
-    )
-
-
-class SambaNovaProvider(PresetOpenAIProvider):
-    PROVIDER_NAME = "SambaNova (Free Tier)"
-    FREE_TIER = True
-    BASE_URL = "https://api.sambanova.ai/v1"
-    DEFAULT_MODEL = "Meta-Llama-3.3-70B-Instruct"
-    KEY_URL = "https://cloud.sambanova.ai/apis"
-    LOGO = "sambanova"
-    KEY_DESCRIPTION = "Paste your SambaNova API key"
-    MODEL_PLACEHOLDER = "e.g., Meta-Llama-3.3-70B-Instruct"
-    PUBLIC_MODEL_LIST = True
-    MODELS = [
-        ("⭐ Llama 3.3 70B (free)", "Meta-Llama-3.3-70B-Instruct"),
-        ("GPT-OSS 120B (free)", "gpt-oss-120b"),
-        ("Gemma 4 31B (free)", "gemma-4-31B-it"),
-        ("MiniMax M3.1 Flash (free)", "MiniMax-M3.1-Flash"),
-        ("DeepSeek V3.1 (free)", "DeepSeek-V3.1"),
-        ("DeepSeek V3.2 (free)", "DeepSeek-V3.2"),
-    ]
-    DESCRIPTION = (
-        "• SambaNova Cloud has a free tier with fast Llama/DeepSeek models.\n"
-        "• Sign up with email; no credit card required.\n"
-        "• Rate-limited per minute/day."
-    )
-
-
-class NvidiaProvider(PresetOpenAIProvider):
-    PROVIDER_NAME = "NVIDIA NIM (Free Credits)"
-    FREE_TIER = True
-    BASE_URL = "https://integrate.api.nvidia.com/v1"
-    DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
-    KEY_URL = "https://build.nvidia.com/"
-    LOGO = "nvidia"
-    KEY_DESCRIPTION = "Paste your NVIDIA API key (nvapi-...)"
-    MODEL_PLACEHOLDER = "e.g., nvidia/nemotron-3.5-lightning-30b-a3b"
-    PUBLIC_MODEL_LIST = True
-    MODELS = [
-        ("⭐ Nemotron 3.5 Lightning (free credits)", "nvidia/nemotron-3.5-lightning-30b-a3b"),
-        ("Nemotron 3 Ultra 550B (free credits)", "nvidia/nemotron-3-ultra-550b-a55b"),
-        ("Nemotron 3 Super 120B (free credits)", "nvidia/nemotron-3-super-120b-a12b"),
-        ("DeepSeek V4.1 Flash (free credits)", "deepseek-ai/deepseek-v4.1-flash"),
-        ("GPT-OSS 20B (free credits)", "openai/gpt-oss-20b"),
-        ("GLM 5.3 Flash (free credits)", "z-ai/glm-5.3-flash"),
-        ("Mistral Large (free credits)", "mistralai/mistral-large"),
-    ]
-    DESCRIPTION = (
-        "• NVIDIA NIM gives free API credits when you sign in at build.nvidia.com.\n"
-        "• Hosts Llama, DeepSeek, Mistral and NVIDIA's Nemotron models.\n"
-        "• No card required for the free credits."
     )
 
 
@@ -2569,6 +2428,64 @@ class AnthropicProvider(PresetOpenAIProvider):
     )
 
 
+class DeepSeekProvider(PresetOpenAIProvider):
+    """
+    DeepSeek - very low-priced pay-as-you-go API with an OpenAI-compatible
+    endpoint. Currently the most used provider on developer routers.
+    """
+
+    PROVIDER_NAME = "DeepSeek"
+    TIER = "paid"
+    FREE_TIER = False
+    BASE_URL = "https://api.deepseek.com"
+    DEFAULT_MODEL = "deepseek-flash"
+    KEY_URL = "https://platform.deepseek.com/api_keys"
+    LOGO = "deepseek"
+    KEY_BUTTON_TEXT = "Get DeepSeek API Key"
+    KEY_DESCRIPTION = "Paste your DeepSeek API key (sk-...)"
+    MODEL_PLACEHOLDER = "e.g., deepseek-flash"
+    PUBLIC_MODEL_LIST = False
+    PLACEHOLDER_MODEL_KEY = False
+    MODELS = [
+        ("DeepSeek Flash (cheap | fast)", "deepseek-flash"),
+        ("DeepSeek V4 Pro (most capable)", "deepseek-v4-pro"),
+    ]
+    DESCRIPTION = (
+        "\u2022 DeepSeek - very cheap pay-as-you-go API (prepaid balance).\n"
+        "\u2022 Create an API key at platform.deepseek.com and top up credit.\n"
+        "\u2022 Click 'Refresh available models' in Settings for the current list."
+    )
+
+
+class XAIProvider(PresetOpenAIProvider):
+    """xAI (Grok) - pay-as-you-go API with an OpenAI-compatible endpoint."""
+
+    PROVIDER_NAME = "xAI (Grok)"
+    TIER = "paid"
+    FREE_TIER = False
+    BASE_URL = "https://api.x.ai/v1"
+    DEFAULT_MODEL = "grok-4.7"
+    KEY_URL = "https://console.x.ai/"
+    LOGO = "xai"
+    KEY_BUTTON_TEXT = "Get xAI API Key"
+    KEY_DESCRIPTION = "Paste your xAI API key (xai-...)"
+    MODEL_PLACEHOLDER = "e.g., grok-4.7"
+    PUBLIC_MODEL_LIST = False
+    PLACEHOLDER_MODEL_KEY = False
+    MODELS = [
+        ("Grok 4.7 (most capable)", "grok-4.7"),
+        ("Grok 4.6", "grok-4.6"),
+        ("Grok 4.5", "grok-4.5"),
+        ("Grok 4.3 (cheaper)", "grok-4.3"),
+        ("Grok 4.20 (non-reasoning)", "grok-4.20-0309-non-reasoning"),
+    ]
+    DESCRIPTION = (
+        "\u2022 xAI (Grok) - pay-as-you-go API.\n"
+        "\u2022 Create an API key at console.x.ai and add credit.\n"
+        "\u2022 Click 'Refresh available models' in Settings for the current list."
+    )
+
+
 class LMStudioProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "LM Studio (Local, Free)"
     TIER = "local"
@@ -2817,22 +2734,18 @@ class OllamaProvider(AIProvider):
 # settings stay attached to provider_name.
 _PROVIDER_LABELS = {
     "Anthropic (Claude)": ("Anthropic (Claude)", "paid"),
-    "Cerebras (Free Tier)": ("Cerebras", "free tier available"),
     "Cloudflare Workers AI (Free)": ("Cloudflare Workers AI", "free tier available"),
-    "Cohere (Free Trial)": ("Cohere", "free trial available"),
+    "DeepSeek": ("DeepSeek", "paid"),
     "Gemini (Recommended)": ("Gemini", "free tier available"),
     "Groq (Free Tier)": ("Groq", "free tier available"),
-    "Hugging Face (Free Credits)": ("Hugging Face", "free credits available"),
     "LM Studio (Local, Free)": ("LM Studio", "local"),
     "Mistral (Free Tier)": ("Mistral", "free tier available"),
-    "NVIDIA NIM (Free Credits)": ("NVIDIA NIM", "free credits available"),
     "Ollama (For Experts)": ("Ollama", "local"),
     "OpenAI (ChatGPT)": ("OpenAI (ChatGPT)", "paid"),
     "OpenAI Compatible (For Experts)": ("OpenAI Compatible", "custom endpoint"),
     "OpenCode (Console)": ("OpenCode", "paid"),
     "OpenRouter (Free Models)": ("OpenRouter", "free models available"),
-    "SambaNova (Free Tier)": ("SambaNova", "free tier available"),
-    "Together AI (Free Model)": ("Together AI", "free model available"),
+    "xAI (Grok)": ("xAI (Grok)", "paid"),
     "Zhipu GLM (Free)": ("Zhipu GLM", "free tier available"),
 }
 
@@ -2841,18 +2754,14 @@ PROVIDER_CLASSES = [
     GeminiProvider,
     OpenRouterProvider,
     GroqProvider,
-    CerebrasProvider,
     MistralProvider,
-    TogetherAIProvider,
-    HuggingFaceProvider,
-    CohereProvider,
-    SambaNovaProvider,
-    NvidiaProvider,
     CloudflareProvider,
     ZhipuProvider,
     OpenCodeProvider,
     OpenAIProvider,
     AnthropicProvider,
+    DeepSeekProvider,
+    XAIProvider,
     LMStudioProvider,
     OllamaProvider,
     OpenAICompatibleProvider,

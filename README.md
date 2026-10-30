@@ -7,7 +7,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-2EA043?style=flat-square">
   <a href="https://github.com/Ulf3000/WritingToolsRE/releases"><img alt="Releases" src="https://img.shields.io/badge/releases-download-57606A?style=flat-square"></a>
-  <img alt="AI providers" src="https://img.shields.io/badge/AI%20providers-18-8250DF?style=flat-square">
+  <img alt="AI providers" src="https://img.shields.io/badge/AI%20providers-14-8250DF?style=flat-square">
 </p>
 
 <p align="center"><sub>Maintained by <a href="https://github.com/Ulf3000">Ulf3000</a></sub></p>
@@ -52,21 +52,17 @@ Choose a provider in **Settings → Choose AI Provider**. Switch providers witho
 | Gemini | Free tier and paid/billing accounts |
 | OpenRouter | Free and paid models |
 | Groq | Free tier |
-| Cerebras | Free tier |
 | Mistral | Free tier |
-| Together AI | Free and paid models |
-| Hugging Face | Free credits |
-| Cohere | Free trial |
-| SambaNova | Free tier |
-| NVIDIA NIM | Free credits |
 | Cloudflare Workers AI | Free daily allowance |
 | Zhipu GLM | Free tier |
-| OpenCode | Pay-as-you-go access to multiple model providers |
 | OpenAI (ChatGPT) | Paid API |
 | Anthropic (Claude) | Paid API |
+| DeepSeek | Paid API (very low prices) |
+| xAI (Grok) | Paid API |
+| OpenCode | Pay-as-you-go access to multiple model providers |
 | LM Studio | Local models |
 | Ollama | Local models |
-| OpenAI Compatible | Compatible APIs and self-hosted servers |
+| OpenAI Compatible | Any compatible API or self-hosted server (e.g. Together AI, Cerebras, NVIDIA NIM) |
 
 Model availability changes. In Settings, refresh the selected provider’s model list to see what is currently available. Some providers require an API key; local Ollama and LM Studio can run without one.
 

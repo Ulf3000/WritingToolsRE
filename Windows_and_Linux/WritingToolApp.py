@@ -323,35 +323,6 @@ class WritingToolApp(QtWidgets.QApplication):
                 "deepseek-r1-distill-llama-70b": "openai/gpt-oss-120b",
                 "gemma2-9b-it": "openai/gpt-oss-20b",
             },
-            "Cerebras (Free Tier)": {
-                "llama-3.3-70b": "gpt-oss-120b",
-                "llama3.1-8b": "gpt-oss-120b",
-                "qwen-3-32b": "gpt-oss-120b",
-                "deepseek-r1-distill-llama-70b": "gpt-oss-120b",
-            },
-            "Cohere (Free Trial)": {
-                "command-r-plus-08-2024": "command-a-03-2025",
-                "command-r-08-2024": "command-a-03-2025",
-                "command-light": "command-a-03-2025",
-            },
-            "NVIDIA NIM (Free Credits)": {
-                "meta/llama-3.3-70b-instruct":
-                    "nvidia/nemotron-3.5-lightning-30b-a3b",
-                "meta/llama-3.1-8b-instruct":
-                    "nvidia/nemotron-3.5-lightning-30b-a3b",
-                "deepseek-ai/deepseek-r1":
-                    "nvidia/nemotron-3.5-lightning-30b-a3b",
-                "mistralai/mistral-7b-instruct-v0.3":
-                    "nvidia/nemotron-3.5-lightning-30b-a3b",
-                "nvidia/llama-3.1-nemotron-70b-instruct":
-                    "nvidia/nemotron-3.5-lightning-30b-a3b",
-            },
-            "SambaNova (Free Tier)": {
-                "Meta-Llama-3.1-8B-Instruct": "Meta-Llama-3.3-70B-Instruct",
-                "DeepSeek-R1-Distill-Llama-70B":
-                    "Meta-Llama-3.3-70B-Instruct",
-                "Qwen2.5-72B-Instruct": "Meta-Llama-3.3-70B-Instruct",
-            },
             "Zhipu GLM (Free)": {
                 "glm-4-flash": "glm-5.3-flash",
                 "glm-4.5-flash": "glm-5.3-flash",
@@ -416,8 +387,8 @@ class WritingToolApp(QtWidgets.QApplication):
                     config_changed = True
 
         if needs_v10:
-            # GitHub Models was retired on 30 July 2026 and replaced by
-            # Together AI. Drop the dead entry so the provider list stays clean.
+            # GitHub Models was retired on 30 July 2026. Drop the dead
+            # entry so the provider list stays clean.
             if providers.pop("GitHub Models (Free)", None) is not None:
                 logging.info("[v10] Removed retired GitHub Models provider")
                 config_changed = True
