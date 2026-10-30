@@ -160,7 +160,11 @@ class WritingToolApp(QtWidgets.QApplication):
         if self.current_provider is None:
             logging.warning("Provider %s not found. Using the default provider.",
                             provider_name)
-            self.current_provider = self.providers[0]
+            self.current_provider = next(
+                (p for p in self.providers
+                 if p.provider_name == "Gemini (Recommended)"),
+                self.providers[0],
+            )
 
         # Always load using the resolved provider name, not the (possibly
         # stale) name from the config file.

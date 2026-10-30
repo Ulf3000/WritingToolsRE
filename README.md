@@ -7,7 +7,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D6?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-GPLv3-2EA043?style=flat-square">
   <a href="https://github.com/Ulf3000/WritingToolsRE/releases"><img alt="Releases" src="https://img.shields.io/badge/releases-download-57606A?style=flat-square"></a>
-  <img alt="AI providers" src="https://img.shields.io/badge/AI%20providers-19-8250DF?style=flat-square">
+  <img alt="AI providers" src="https://img.shields.io/badge/AI%20providers-18-8250DF?style=flat-square">
 </p>
 
 <p align="center"><sub>Maintained by <a href="https://github.com/Ulf3000">Ulf3000</a></sub></p>
@@ -49,8 +49,7 @@ Choose a provider in **Settings → Choose AI Provider**. Switch providers witho
 
 | Provider | Access |
 |---|---|
-| Gemini | Free tier |
-| Gemini (Paid / Billing) | Paid tier (billing enabled) |
+| Gemini | Free tier and paid/billing accounts |
 | OpenRouter | Free and paid models |
 | Groq | Free tier |
 | Cerebras | Free tier |

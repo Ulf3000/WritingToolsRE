@@ -594,6 +594,8 @@ class SettingsWindow(QtWidgets.QWidget):
         for index, provider in enumerate(self.app.providers):
             self.provider_dropdown.addItem(provider.provider_name, index)
         provider_index = self.provider_dropdown.findText(current_provider)
+        if provider_index < 0:
+            provider_index = self.provider_dropdown.findText("Gemini (Recommended)")
         self.provider_dropdown.setCurrentIndex(provider_index if provider_index >= 0 else 0)
         provider_row.addWidget(self.provider_dropdown, 1)
         content_layout.addLayout(provider_row)
