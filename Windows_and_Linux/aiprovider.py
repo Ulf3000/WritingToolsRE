@@ -674,6 +674,10 @@ class AIProvider(ABC):
       • cancel() to cancel an ongoing request
     """
 
+    # Pricing tier used to order providers in the Settings dropdown:
+    # free providers first, then paid, then local ones.
+    TIER = "free"  # "free" | "paid" | "local"
+
     def __init__(self, app, provider_name: str, settings: List[AIProviderSetting],
                  description: str = "An unfinished AI provider!",
                  logo: str = None,
@@ -686,6 +690,7 @@ class AIProvider(ABC):
         self.logo = logo
         self.button_text = button_text
         self.button_action = button_action
+        self.tier = type(self).TIER
         # Live-discovered model list + specs (persisted in config so the
         # fetched catalog survives restarts).
         self.cached_models: list[tuple[str, str]] = []
@@ -1388,6 +1393,7 @@ class OpenAICompatibleProvider(AIProvider):
     EXTRA_HEADERS = None
     ALLOW_EMPTY_KEY = False
     TEMPERATURE = 0.5
+    TIER = "paid"  # custom endpoint: usually paid or self-hosted
 
     # Model discovery metadata (overridden by presets).
     MODELS = []
@@ -2368,6 +2374,7 @@ class OpenCodeProvider(PresetOpenAIProvider):
     """
 
     PROVIDER_NAME = "OpenCode (Console)"
+    TIER = "paid"
     BASE_URL = "https://opencode.ai/inference/openai/v1"
     DEFAULT_MODEL = "deepseek-v4.1-flash"
     KEY_URL = "https://opencode.ai/console"
@@ -2414,8 +2421,76 @@ class OpenCodeProvider(PresetOpenAIProvider):
     )
 
 
+class OpenAIProvider(PresetOpenAIProvider):
+    """
+    OpenAI (ChatGPT) — pay-as-you-go API.
+
+    Uses the OpenAI-compatible endpoint, so it plugs into the shared preset
+    provider without special-casing.
+    """
+
+    PROVIDER_NAME = "OpenAI (ChatGPT)"
+    TIER = "paid"
+    BASE_URL = "https://api.openai.com/v1"
+    DEFAULT_MODEL = "gpt-4o-mini"
+    KEY_URL = "https://platform.openai.com/api-keys"
+    LOGO = "openai"
+    KEY_BUTTON_TEXT = "Get OpenAI API Key"
+    KEY_DESCRIPTION = "Paste your OpenAI API key (sk-...)"
+    MODEL_PLACEHOLDER = "e.g., gpt-4o-mini"
+    PUBLIC_MODEL_LIST = False
+    PLACEHOLDER_MODEL_KEY = False
+    MODELS = [
+        ("GPT-4o", "gpt-4o"),
+        ("GPT-4o mini (cheap | fast)", "gpt-4o-mini"),
+        ("GPT-4.1", "gpt-4.1"),
+        ("GPT-4.1 mini (cheap | fast)", "gpt-4.1-mini"),
+        ("GPT-4.1 nano (cheapest)", "gpt-4.1-nano"),
+        ("o4-mini (reasoning)", "o4-mini"),
+        ("o3 (reasoning)", "o3"),
+    ]
+    DESCRIPTION = (
+        "• OpenAI (ChatGPT) — pay-as-you-go API.\n"
+        "• Create an API key at platform.openai.com.\n"
+        "• Click 'Refresh available models' in Settings for the current list."
+    )
+
+
+class AnthropicProvider(PresetOpenAIProvider):
+    """
+    Anthropic (Claude) — pay-as-you-go API.
+
+    Uses Anthropic's OpenAI-compatible endpoint, so it plugs into the shared
+    preset provider without special-casing.
+    """
+
+    PROVIDER_NAME = "Anthropic (Claude)"
+    TIER = "paid"
+    BASE_URL = "https://api.anthropic.com/v1"
+    DEFAULT_MODEL = "claude-sonnet-4-5"
+    KEY_URL = "https://console.anthropic.com/settings/keys"
+    LOGO = "claude"
+    KEY_BUTTON_TEXT = "Get Anthropic API Key"
+    KEY_DESCRIPTION = "Paste your Anthropic API key (sk-ant-...)"
+    MODEL_PLACEHOLDER = "e.g., claude-sonnet-4-5"
+    PUBLIC_MODEL_LIST = False
+    PLACEHOLDER_MODEL_KEY = False
+    EXTRA_HEADERS = {"anthropic-version": "2023-06-01"}
+    MODELS = [
+        ("Claude Sonnet 4.5 (balanced)", "claude-sonnet-4-5"),
+        ("Claude Haiku 4.5 (fast | cheap)", "claude-haiku-4-5"),
+        ("Claude Opus 4.1 (most capable)", "claude-opus-4-1"),
+    ]
+    DESCRIPTION = (
+        "• Anthropic (Claude) — pay-as-you-go API.\n"
+        "• Create an API key at console.anthropic.com.\n"
+        "• Click 'Refresh available models' in Settings for the current list."
+    )
+
+
 class LMStudioProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "LM Studio (Local, Free)"
+    TIER = "local"
     BASE_URL = "http://localhost:1234/v1"
     DEFAULT_MODEL = "local-model"
     KEY_URL = "https://lmstudio.ai/"
@@ -2443,11 +2518,9 @@ class OllamaProvider(AIProvider):
     Uses the /chat endpoint. Streaming is not used.
     """
 
+    TIER = "local"
+
     def __init__(self, app):
-        self.close_requested = False
-        self.client = None
-        self.app = app
-        self.api_base = "http://localhost:11434"
         self.api_model = "llama3.1:8b"
         self.keep_alive = "5m"
 
@@ -2669,6 +2742,8 @@ PROVIDER_CLASSES = [
     CloudflareProvider,
     ZhipuProvider,
     OpenCodeProvider,
+    OpenAIProvider,
+    AnthropicProvider,
     LMStudioProvider,
     OllamaProvider,
     OpenAICompatibleProvider,
@@ -2677,8 +2752,14 @@ PROVIDER_CLASSES = [
 
 def create_providers(app) -> list[AIProvider]:
     """Instantiate every provider, skipping any that fail to initialise."""
+    # Free tiers first, then paid, then local — keeps the Settings dropdown
+    # ordered the way users expect (free options at the top).
+    tier_order = {"free": 0, "paid": 1, "local": 2}
+    ordered_classes = sorted(
+        PROVIDER_CLASSES, key=lambda cls: tier_order.get(getattr(cls, "TIER", "free"), 1)
+    )
     providers = []
-    for provider_class in PROVIDER_CLASSES:
+    for provider_class in ordered_classes:
         try:
             providers.append(provider_class(app))
         except Exception as exc:  # noqa: BLE001
