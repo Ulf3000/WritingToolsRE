@@ -171,6 +171,34 @@ class SettingsWindow(QtWidgets.QWidget):
         # Add provider settings
         for setting in provider.settings:
             setting.set_value(self.app.config["providers"][provider.provider_name].get(setting.name, setting.default_value))
+            is_model_setting = (
+                setting.name in ("api_model", "model_name")
+                and hasattr(setting, "set_options")
+            )
+            if is_model_setting:
+                # Model-tier filter sits directly above the model dropdown.
+                filter_row = QtWidgets.QHBoxLayout()
+                filter_row.setSpacing(10)
+                filter_label = QtWidgets.QLabel(_("Model filter"))
+                UIUtils.set_label_role(filter_label, "section")
+                filter_row.addWidget(filter_label)
+
+                self.model_tier_dropdown = NoWheelComboBox()
+                self.model_tier_dropdown.addItem(_("All models"), "all")
+                self.model_tier_dropdown.addItem(_("Free only"), "free")
+                self.model_tier_dropdown.addItem(_("Paid only"), "paid")
+                current_filter = (
+                    self.app.config.get("model_tier_filter", "all")
+                    if isinstance(self.app.config, dict) else "all"
+                )
+                idx = self.model_tier_dropdown.findData(current_filter)
+                self.model_tier_dropdown.setCurrentIndex(idx if idx >= 0 else 0)
+                self.model_tier_dropdown.currentIndexChanged.connect(
+                    self._on_model_tier_changed
+                )
+                filter_row.addWidget(self.model_tier_dropdown, 1)
+                self.current_provider_layout.addLayout(filter_row)
+
             setting.render_to_layout(self.current_provider_layout)
             if (setting.name in ("api_model", "model_name")
                     and hasattr(setting, "set_options")):
@@ -549,28 +577,6 @@ class SettingsWindow(QtWidgets.QWidget):
             self._on_ui_scale_changed(current_scale)
             content_layout.addLayout(scale_row)
 
-            # Model tier filter: show free, paid, or all models in every
-            # provider's model dropdown.
-            filter_row = QHBoxLayout()
-            filter_row.setSpacing(10)
-            filter_label = QtWidgets.QLabel(_("Model filter"))
-            UIUtils.set_label_role(filter_label, "section")
-            filter_label.setFixedWidth(label_width)
-            filter_row.addWidget(filter_label)
-
-            self.model_tier_dropdown = NoWheelComboBox()
-            self.model_tier_dropdown.addItem(_("All models"), "all")
-            self.model_tier_dropdown.addItem(_("Free only"), "free")
-            self.model_tier_dropdown.addItem(_("Paid only"), "paid")
-            current_filter = self.app.config.get("model_tier_filter", "all")
-            idx = self.model_tier_dropdown.findData(current_filter)
-            self.model_tier_dropdown.setCurrentIndex(idx if idx >= 0 else 0)
-            self.model_tier_dropdown.currentIndexChanged.connect(
-                self._on_model_tier_changed
-            )
-            filter_row.addWidget(self.model_tier_dropdown, 1)
-            content_layout.addLayout(filter_row)
-
         # Provider selection shares its row with the label.
         provider_row = QHBoxLayout()
         provider_row.setSpacing(10)
@@ -585,24 +591,8 @@ class SettingsWindow(QtWidgets.QWidget):
         )
 
         current_provider = self.app.config.get('provider', 'Gemini (Recommended)')
-        # Group providers by tier (free -> paid -> local) with a separator
-        # line between the groups, so the dropdown stays scannable.
-        prev_tier = None
         for index, provider in enumerate(self.app.providers):
-            tier = getattr(provider, "tier", "free")
-            if prev_tier is not None and tier != prev_tier:
-                self.provider_dropdown.insertSeparator(
-                    self.provider_dropdown.count()
-                )
-                # Make the separator non-selectable so it can never become
-                # the active provider (which would leave the form empty).
-                sep_item = self.provider_dropdown.model().item(
-                    self.provider_dropdown.count() - 1
-                )
-                if sep_item is not None:
-                    sep_item.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
             self.provider_dropdown.addItem(provider.provider_name, index)
-            prev_tier = tier
         provider_index = self.provider_dropdown.findText(current_provider)
         self.provider_dropdown.setCurrentIndex(provider_index if provider_index >= 0 else 0)
         provider_row.addWidget(self.provider_dropdown, 1)

@@ -2854,15 +2854,12 @@ PROVIDER_CLASSES = [
 
 def create_providers(app) -> list[AIProvider]:
     """Instantiate every provider, skipping any that fail to initialise."""
-    # Free tiers first, then paid, then local — keeps the Settings dropdown
-    # ordered the way users expect (free options at the top).
-    tier_order = {"free": 0, "paid": 1, "local": 2}
+    # One entry per provider, sorted alphabetically by name. The free/paid
+    # distinction lives on the model level (see the Model filter below), not
+    # on the provider level.
     ordered_classes = sorted(
         PROVIDER_CLASSES,
-        key=lambda cls: (
-            tier_order.get(getattr(cls, "TIER", "free"), 1),
-            getattr(cls, "PROVIDER_NAME", cls.__name__).lower(),
-        ),
+        key=lambda cls: getattr(cls, "PROVIDER_NAME", cls.__name__).lower(),
     )
     providers = []
     for provider_class in ordered_classes:
