@@ -70,6 +70,8 @@ class SettingsWindow(QtWidgets.QWidget):
         """
         Initialize the user interface for the provider, including logo, name, description and all settings.
         """
+        if provider is None:
+            return
         # Any fetch still in flight belongs to the previous provider.
         self._model_request_id += 1
         self._model_setting = None
@@ -265,8 +267,11 @@ class SettingsWindow(QtWidgets.QWidget):
 
     def _current_provider(self):
         try:
-            return self.app.providers[self.provider_dropdown.currentIndex()]
-        except (AttributeError, IndexError, TypeError):
+            index = self.provider_dropdown.currentData()
+            if index is None:
+                return None
+            return self.app.providers[int(index)]
+        except (AttributeError, IndexError, TypeError, ValueError):
             return None
 
     @staticmethod
@@ -558,8 +563,24 @@ class SettingsWindow(QtWidgets.QWidget):
         )
 
         current_provider = self.app.config.get('provider', 'Gemini (Recommended)')
-        for provider in self.app.providers:
-            self.provider_dropdown.addItem(provider.provider_name)
+        # Group providers by tier (free -> paid -> local) with a separator
+        # line between the groups, so the dropdown stays scannable.
+        prev_tier = None
+        for index, provider in enumerate(self.app.providers):
+            tier = getattr(provider, "tier", "free")
+            if prev_tier is not None and tier != prev_tier:
+                self.provider_dropdown.insertSeparator(
+                    self.provider_dropdown.count()
+                )
+                # Make the separator non-selectable so it can never become
+                # the active provider (which would leave the form empty).
+                sep_item = self.provider_dropdown.model().item(
+                    self.provider_dropdown.count() - 1
+                )
+                if sep_item is not None:
+                    sep_item.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+            self.provider_dropdown.addItem(provider.provider_name, index)
+            prev_tier = tier
         provider_index = self.provider_dropdown.findText(current_provider)
         self.provider_dropdown.setCurrentIndex(provider_index if provider_index >= 0 else 0)
         provider_row.addWidget(self.provider_dropdown, 1)
@@ -572,12 +593,12 @@ class SettingsWindow(QtWidgets.QWidget):
         content_layout.addLayout(self.provider_container)
 
         # Initialize provider UI
-        provider_instance = self.app.providers[self.provider_dropdown.currentIndex()]
+        provider_instance = self._current_provider()
         self.init_provider_ui(provider_instance, self.provider_container)
 
         # Connect provider dropdown
         self.provider_dropdown.currentIndexChanged.connect(
-            lambda: self.init_provider_ui(self.app.providers[self.provider_dropdown.currentIndex()], self.provider_container)
+            lambda: self.init_provider_ui(self._current_provider(), self.provider_container)
         )
 
         # Set up scroll area with content
@@ -723,12 +744,10 @@ class SettingsWindow(QtWidgets.QWidget):
         self.app.config['is_config_file_updated_for_v10'] = True
         self.app.config['is_config_file_updated_for_v11'] = True
 
-        try:
-            selected_index = self.provider_dropdown.currentIndex()
-            selected_provider = self.app.providers[selected_index]
-        except (IndexError, TypeError):
+        selected_provider = self._current_provider()
+        if selected_provider is None:
             logging.error("Provider dropdown selection is invalid")
-            selected_provider = self.app.providers[0]
+            return
         selected_provider.save_config()
 
         provider_name = self.app.config.get('provider', selected_provider.provider_name)
