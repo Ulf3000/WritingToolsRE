@@ -16,7 +16,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QHBoxLayout, QScrollArea
 
 from ui.AutostartManager import AutostartManager
-from ui.UIUtils import NoWheelComboBox, UIUtils
+from ui.UIUtils import NoteItemDelegate, NoWheelComboBox, UIUtils
 
 _ = lambda x: x
 
@@ -119,7 +119,7 @@ class SettingsWindow(QtWidgets.QWidget):
                 logo_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
                 provider_header_layout.addWidget(logo_label)
 
-        provider_name_label = QtWidgets.QLabel(provider.provider_name)
+        provider_name_label = QtWidgets.QLabel(provider.display_name)
         UIUtils.set_label_role(provider_name_label, "section")
         provider_name_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignVCenter)
         provider_header_layout.addWidget(provider_name_label)
@@ -590,12 +590,30 @@ class SettingsWindow(QtWidgets.QWidget):
             QtWidgets.QComboBox.InsertPolicy.NoInsert
         )
 
-        current_provider = self.app.config.get('provider', 'Gemini (Recommended)')
+        # Clean name on the left, grey hint ("free tier available") right-aligned
+        # in the open list. The stable provider_name stays the config key.
+        self.provider_dropdown.setItemDelegate(NoteItemDelegate(self.provider_dropdown))
         for index, provider in enumerate(self.app.providers):
-            self.provider_dropdown.addItem(provider.provider_name, index)
-        provider_index = self.provider_dropdown.findText(current_provider)
+            self.provider_dropdown.addItem(provider.display_name, index)
+            self.provider_dropdown.setItemData(
+                self.provider_dropdown.count() - 1,
+                provider.display_note,
+                NoteItemDelegate.NOTE_ROLE,
+            )
+
+        def _row_for(provider_name):
+            for row in range(self.provider_dropdown.count()):
+                idx = self.provider_dropdown.itemData(row)
+                if (idx is not None
+                        and self.app.providers[int(idx)].provider_name == provider_name):
+                    return row
+            return -1
+
+        provider_index = _row_for(
+            self.app.config.get('provider', 'Gemini (Recommended)')
+        )
         if provider_index < 0:
-            provider_index = self.provider_dropdown.findText("Gemini (Recommended)")
+            provider_index = _row_for("Gemini (Recommended)")
         self.provider_dropdown.setCurrentIndex(provider_index if provider_index >= 0 else 0)
         provider_row.addWidget(self.provider_dropdown, 1)
         content_layout.addLayout(provider_row)
@@ -796,7 +814,9 @@ class SettingsWindow(QtWidgets.QWidget):
             self.app.create_tray_icon()
 
         self.app.config['streaming'] = False
-        self.app.config['provider'] = self.provider_dropdown.currentText()
+        current = self._current_provider()
+        if current is not None:
+            self.app.config['provider'] = current.provider_name
 
         # Mark config as current for both migrations (new users start here).
         self.app.config['is_config_file_updated_for_v8'] = True

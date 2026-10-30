@@ -39,6 +39,55 @@ class NoWheelComboBox(QtWidgets.QComboBox):
         return None
 
 
+class NoteItemDelegate(QtWidgets.QStyledItemDelegate):
+    """
+    Draws a dropdown row as ``name ........ grey note``.
+
+    The note lives in ``NOTE_ROLE`` so the item text stays the clean name
+    (what the closed combo box shows), while the open list gets a tidy,
+    right-aligned secondary column such as "free tier available".
+    """
+
+    NOTE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 1
+
+    def paint(self, painter, option, index):
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        name = opt.text
+        opt.text = ""
+        style = opt.widget.style() if opt.widget else QtWidgets.QApplication.style()
+        style.drawControl(
+            QtWidgets.QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget
+        )
+
+        palette = UIUtils.palette()
+        rect = opt.rect.adjusted(8, 0, -8, 0)
+        painter.save()
+        painter.setPen(QtGui.QColor(palette["text"]))
+        painter.drawText(
+            rect,
+            int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft),
+            name,
+        )
+        note = index.data(self.NOTE_ROLE) or ""
+        if note:
+            small = QtGui.QFont(painter.font())
+            small.setPointSizeF(max(small.pointSizeF() - 1.0, 7.0))
+            painter.setFont(small)
+            painter.setPen(QtGui.QColor(palette["muted"]))
+            painter.drawText(
+                rect,
+                int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignRight),
+                note,
+            )
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        size.setHeight(max(size.height(), 28))
+        return size
+
+
 class UIUtils:
     # Windows 11 Fluent-inspired palette. Neutral surfaces, one accent colour,
     # compact controls. The dark variant uses a light-blue accent with dark

@@ -738,6 +738,16 @@ class AIProvider(ABC):
         self.cached_models: list[tuple[str, str]] = []
         self.model_specs: dict[str, dict] = {}
 
+    @property
+    def display_name(self) -> str:
+        """Clean name shown in the provider dropdown."""
+        return _PROVIDER_LABELS.get(self.provider_name, (self.provider_name, ""))[0]
+
+    @property
+    def display_note(self) -> str:
+        """Short grey hint shown next to the name (e.g. 'free tier available')."""
+        return _PROVIDER_LABELS.get(self.provider_name, (self.provider_name, ""))[1]
+
     def model_is_free(self, model_id: str):
         """Return True/False/None for a model id (None = unknown)."""
         return self.free_tier
@@ -2802,7 +2812,31 @@ class OllamaProvider(AIProvider):
 # Registry
 # ---------------------------------------------------------------------------
 
-# Order matters: the first provider is the default for brand-new installs.
+# Dropdown labels: provider_name (the stable config key, never changed) ->
+# (clean display name, grey hint). Only the display changes; saved keys and
+# settings stay attached to provider_name.
+_PROVIDER_LABELS = {
+    "Anthropic (Claude)": ("Anthropic (Claude)", "paid"),
+    "Cerebras (Free Tier)": ("Cerebras", "free tier available"),
+    "Cloudflare Workers AI (Free)": ("Cloudflare Workers AI", "free tier available"),
+    "Cohere (Free Trial)": ("Cohere", "free trial available"),
+    "Gemini (Recommended)": ("Gemini", "free tier available"),
+    "Groq (Free Tier)": ("Groq", "free tier available"),
+    "Hugging Face (Free Credits)": ("Hugging Face", "free credits available"),
+    "LM Studio (Local, Free)": ("LM Studio", "local"),
+    "Mistral (Free Tier)": ("Mistral", "free tier available"),
+    "NVIDIA NIM (Free Credits)": ("NVIDIA NIM", "free credits available"),
+    "Ollama (For Experts)": ("Ollama", "local"),
+    "OpenAI (ChatGPT)": ("OpenAI (ChatGPT)", "paid"),
+    "OpenAI Compatible (For Experts)": ("OpenAI Compatible", "custom endpoint"),
+    "OpenCode (Console)": ("OpenCode", "paid"),
+    "OpenRouter (Free Models)": ("OpenRouter", "free models available"),
+    "SambaNova (Free Tier)": ("SambaNova", "free tier available"),
+    "Together AI (Free Model)": ("Together AI", "free model available"),
+    "Zhipu GLM (Free)": ("Zhipu GLM", "free tier available"),
+}
+
+# Order matters only as a tie-break; the dropdown is sorted by display name.
 PROVIDER_CLASSES = [
     GeminiProvider,
     OpenRouterProvider,
@@ -2827,15 +2861,11 @@ PROVIDER_CLASSES = [
 
 def create_providers(app) -> list[AIProvider]:
     """Instantiate every provider, skipping any that fail to initialise."""
-    # One entry per provider, sorted alphabetically by name. The free/paid
-    # distinction lives on the model level (see the Model filter below), not
-    # on the provider level.
-    ordered_classes = sorted(
-        PROVIDER_CLASSES,
-        key=lambda cls: getattr(cls, "PROVIDER_NAME", cls.__name__).lower(),
-    )
+    # One entry per provider, sorted alphabetically by display name. The
+    # free/paid distinction lives on the model level (Model filter), not on
+    # the provider level.
     providers = []
-    for provider_class in ordered_classes:
+    for provider_class in PROVIDER_CLASSES:
         try:
             providers.append(provider_class(app))
         except Exception as exc:  # noqa: BLE001
@@ -2844,4 +2874,5 @@ def create_providers(app) -> list[AIProvider]:
     if not providers:
         # Absolutely should not happen, but never leave the app provider-less.
         providers.append(GeminiProvider(app))
+    providers.sort(key=lambda p: p.display_name.lower())
     return providers
