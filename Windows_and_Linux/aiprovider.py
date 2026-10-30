@@ -423,6 +423,12 @@ def _friendly_error(exc: Exception, provider_name: str) -> tuple[str, str]:
     )
 
 
+def normalize_tier_filter(value) -> str:
+    """Return a valid Free/Paid/All model filter value ("all" by default)."""
+    value = str(value or "all").strip().lower()
+    return value if value in ("all", "free", "paid") else "all"
+
+
 class AIProviderSetting(ABC):
     """Abstract base class for a provider setting (e.g., API key, model)."""
 
@@ -512,7 +518,7 @@ class DropdownSetting(AIProviderSetting):
                  default_value: str = None, description: str = None,
                  options: list = None, allow_custom: bool = False,
                  custom_placeholder: str = "Enter custom value",
-                 app=None, free_predicate: callable = None):
+                 provider=None):
         super().__init__(name, display_name, default_value, description)
         self.options = options if options else []
         self.full_options = list(self.options)
@@ -522,8 +528,10 @@ class DropdownSetting(AIProviderSetting):
         self.custom_placeholder = custom_placeholder
         self.custom_input = None
         self.custom_input_container = None
-        self.app = app
-        self.free_predicate = free_predicate
+        # The owning provider supplies both the free/paid classification of
+        # a model and the user's Free/Paid/All choice, so every provider
+        # keeps its own filter.
+        self.provider = provider
 
     def render_to_layout(self, layout: QVBoxLayout):
         row_layout = QtWidgets.QHBoxLayout()
@@ -532,7 +540,7 @@ class DropdownSetting(AIProviderSetting):
         row_layout.addWidget(label)
         self.dropdown = NoWheelComboBox()
 
-        for option, value in self._filtered_options():
+        for option, value in self._filtered_options(keep=self.internal_value):
             self.dropdown.addItem(option, value)
 
         if self.allow_custom:
@@ -624,7 +632,7 @@ class DropdownSetting(AIProviderSetting):
         self.dropdown.blockSignals(True)
         try:
             self.dropdown.clear()
-            filtered = self._filtered_options()
+            filtered = self._filtered_options(keep=current)
             for label, value in filtered:
                 self.dropdown.addItem(label, value)
             if self.allow_custom:
@@ -658,29 +666,29 @@ class DropdownSetting(AIProviderSetting):
 
     @property
     def tier_filter(self):
-        app = getattr(self, "app", None)
-        if app is not None and isinstance(getattr(app, "config", None), dict):
-            return app.config.get("model_tier_filter", "all")
-        return "all"
+        """This provider's Free/Paid/All choice ("all" when unknown)."""
+        return getattr(self.provider, "model_tier_filter", "all")
 
-    def _filtered_options(self):
+    def _filtered_options(self, keep=None):
+        """
+        Options that match this provider's Free/Paid/All filter.
+
+        ``keep`` is the currently selected model: it always stays in the list,
+        so switching the filter never throws away the user's selection.
+        """
         options = list(getattr(self, "full_options", None) or self.options or [])
         mode = self.tier_filter
-        if mode == "all":
+        if mode == "all" or self.provider is None:
             return options
         want_free = (mode == "free")
         result = []
         for label, value in options:
-            is_free = None
-            pred = getattr(self, "free_predicate", None)
-            if callable(pred):
-                try:
-                    is_free = pred(value)
-                except Exception:  # noqa: BLE001
-                    is_free = None
-            if is_free is None:
-                result.append((label, value))
-            elif is_free == want_free:
+            try:
+                is_free = self.provider.model_is_free(value)
+            except Exception:  # noqa: BLE001
+                is_free = None
+            # Unknown tier is kept in every filter mode.
+            if is_free is None or is_free == want_free or value == keep:
                 result.append((label, value))
         return result
 
@@ -717,6 +725,10 @@ class AIProvider(ABC):
     # Whether every model this provider offers is free (True), paid (False),
     # or unknown/mixed (None). Used by the model-tier filter in Settings.
     FREE_TIER = None
+
+    # The user's Free/Paid/All choice for this provider's model list. It is
+    # stored in this provider's own config block, never shared across providers.
+    model_tier_filter = "all"
 
     def __init__(self, app, provider_name: str, settings: List[AIProviderSetting],
                  description: str = "An unfinished AI provider!",
@@ -852,6 +864,7 @@ class AIProvider(ABC):
         """Load configuration settings into the provider."""
         if not isinstance(config, dict):
             config = {}
+        self.model_tier_filter = normalize_tier_filter(config.get("model_tier_filter"))
         self._apply_cached_models(config)
         for setting in self.settings:
             value = config.get(setting.name, setting.default_value)
@@ -869,6 +882,7 @@ class AIProvider(ABC):
             if setting.name == "api_key":
                 value = obfuscate_api_key(value)
             config[setting.name] = value
+        config["model_tier_filter"] = normalize_tier_filter(self.model_tier_filter)
 
         # Persist the live model catalog (and its specs) so refreshing once
         # keeps retired models out of the dropdown after a restart, even when
@@ -1012,8 +1026,7 @@ class GeminiProvider(AIProvider):
                 ],
                 allow_custom=True,
                 custom_placeholder="e.g., gemini-3.8-flash",
-                app=app,
-                free_predicate=self.model_is_free,
+                provider=self,
             ),
             DropdownSetting(
                 name="thinking_level",
@@ -2003,8 +2016,7 @@ class PresetOpenAIProvider(OpenAICompatibleProvider):
                 options=self.MODELS,
                 allow_custom=True,
                 custom_placeholder=self.MODEL_PLACEHOLDER,
-                app=app,
-                free_predicate=self.model_is_free,
+                provider=self,
             ),
         ]
         super().__init__(
@@ -2542,8 +2554,7 @@ class OllamaProvider(AIProvider):
                 ],
                 allow_custom=True,
                 custom_placeholder="e.g., llama3.2:3b",
-                app=app,
-                free_predicate=self.model_is_free,
+                provider=self,
             ),
             TextSetting(
                 name="keep_alive",

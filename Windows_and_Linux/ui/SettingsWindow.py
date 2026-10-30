@@ -2,7 +2,7 @@ import logging
 import os
 import threading
 
-from aiprovider import AIProvider, _spec_summary
+from aiprovider import AIProvider, _spec_summary, normalize_tier_filter
 from apputils import resource_path
 from defaults import (
     DEFAULT_UI_SCALE,
@@ -43,6 +43,7 @@ class SettingsWindow(QtWidgets.QWidget):
         self._model_refresh_button = None
         self._model_details_label = None
         self._model_request_id = 0
+        self._pending_filters = {}
         self.save_button = None
         self.scroll_area = None
         self.scroll_content = None
@@ -166,6 +167,17 @@ class SettingsWindow(QtWidgets.QWidget):
         if provider.provider_name not in self.app.config["providers"]:
             self.app.config["providers"][provider.provider_name] = {}
 
+        # Every provider has its own Free/Paid/All filter: take this window's
+        # pending choice, else the one stored in the provider's own config.
+        provider.model_tier_filter = self._pending_filters.get(
+            provider.provider_name,
+            normalize_tier_filter(
+                self.app.config["providers"][provider.provider_name].get(
+                    "model_tier_filter"
+                )
+            ),
+        )
+
         # Add provider settings
         for setting in provider.settings:
             setting.set_value(self.app.config["providers"][provider.provider_name].get(setting.name, setting.default_value))
@@ -185,11 +197,7 @@ class SettingsWindow(QtWidgets.QWidget):
                 self.model_tier_dropdown.addItem(_("All models"), "all")
                 self.model_tier_dropdown.addItem(_("Free only"), "free")
                 self.model_tier_dropdown.addItem(_("Paid only"), "paid")
-                current_filter = (
-                    self.app.config.get("model_tier_filter", "all")
-                    if isinstance(self.app.config, dict) else "all"
-                )
-                idx = self.model_tier_dropdown.findData(current_filter)
+                idx = self.model_tier_dropdown.findData(provider.model_tier_filter)
                 self.model_tier_dropdown.setCurrentIndex(idx if idx >= 0 else 0)
                 self.model_tier_dropdown.currentIndexChanged.connect(
                     self._on_model_tier_changed
@@ -712,52 +720,24 @@ class SettingsWindow(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self._fit_height)
 
     def _on_model_tier_changed(self, _index=None):
-        """Persist the model-tier filter and refresh the provider form."""
-        dropdown = getattr(self, "model_tier_dropdown", None)
-        if dropdown is None:
-            return
-        value = dropdown.currentData()
-        if value is None:
-            return
-        if not isinstance(self.app.config, dict):
-            self.app.config = {}
-        self.app.config["model_tier_filter"] = str(value)
-        # Re-render so the model dropdown reflects the new filter.
-        try:
-            self.init_provider_ui(
-                self._current_provider(), self.provider_container
-            )
-        except Exception:  # noqa: BLE001
-            pass
-        self._schedule_fit_height()
         """
-        Resize the window to show the whole form.
+        Apply the Free/Paid/All choice to the current provider only.
 
-        The form is compact on purpose; this keeps the window as small as the
-        content allows, and never taller than the available screen.
+        Only that provider's model list is rebuilt, so the selected model
+        (and anything else typed into the form) stays untouched.
         """
-        content = getattr(self, "scroll_content", None)
-        bottom = getattr(self, "bottom_container", None)
-        if content is None or bottom is None:
+        provider = self._current_provider()
+        dropdown = getattr(self, "model_tier_dropdown", None)
+        if provider is None or dropdown is None:
             return
-        try:
-            width = self.width() or 560
-            layout = content.layout()
-            content_height = layout.heightForWidth(width) if layout is not None else -1
-            if content_height <= 0:
-                content_height = content.sizeHint().height()
-            total = content_height + bottom.sizeHint().height() + 4
-        except RuntimeError:
-            return
-        screen = self.screen()
-        if screen is None:
-            screen = QtWidgets.QApplication.primaryScreen()
-        available = screen.availableGeometry().height() if screen is not None else 800
-        total = max(self._MIN_HEIGHT, min(total, int(available * 0.94)))
-        try:
-            self.setFixedHeight(total)
-        except RuntimeError:
-            pass
+        value = normalize_tier_filter(dropdown.currentData())
+        provider.model_tier_filter = value
+        self._pending_filters[provider.provider_name] = value
+        setting = self._model_setting
+        if setting is not None:
+            setting.set_options(setting.full_options)
+            self._update_model_details(provider, setting)
+        self._schedule_fit_height()
 
     @staticmethod
     def toggle_autostart(state):
@@ -813,10 +793,9 @@ class SettingsWindow(QtWidgets.QWidget):
             self.app.config['ui_scale'] = clamp_ui_scale(
                 self.ui_scale_slider.value() / 100.0
             )
-        if getattr(self, "model_tier_dropdown", None) is not None:
-            value = self.model_tier_dropdown.currentData()
-            if value is not None:
-                self.app.config['model_tier_filter'] = str(value)
+        # The filter lives in each provider's own config block now; drop the
+        # old global key.
+        self.app.config.pop('model_tier_filter', None)
         self.app.config['streaming'] = False
         current = self._current_provider()
         if current is not None:
