@@ -33,13 +33,11 @@ class SettingsWindow(QtWidgets.QWidget):
     The settings window for the application.
     Now with scrolling support for better usability on smaller screens.
     """
-    close_signal = QtCore.Signal()
 
-    def __init__(self, app, providers_only=False):
+    def __init__(self, app):
         super().__init__()
         self.app = app
         self.current_provider_layout = None
-        self.providers_only = providers_only
         self._model_setting = None
         self._model_status_label = None
         self._model_refresh_button = None
@@ -488,94 +486,93 @@ class SettingsWindow(QtWidgets.QWidget):
         # Shared label column so the general rows line up.
         label_width = 78
 
-        if not self.providers_only:
-            title_label = QtWidgets.QLabel(_("Settings"))
-            UIUtils.set_label_role(title_label, "title")
-            content_layout.addWidget(
-                title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter
-            )
+        title_label = QtWidgets.QLabel(_("Settings"))
+        UIUtils.set_label_role(title_label, "title")
+        content_layout.addWidget(
+            title_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter
+        )
 
-            # General options on one row: start-on-boot (Windows build only)
-            # and the shortcut field side by side.
-            general_row = QHBoxLayout()
-            general_row.setSpacing(10)
-            if AutostartManager.get_startup_path():
-                self.autostart_checkbox = QtWidgets.QCheckBox(_("Start on Boot"))
-                self.autostart_checkbox.setChecked(
-                    AutostartManager.check_autostart()
+        # General options on one row: start-on-boot (Windows build only)
+        # and the shortcut field side by side.
+        general_row = QHBoxLayout()
+        general_row.setSpacing(10)
+        if AutostartManager.get_startup_path():
+            self.autostart_checkbox = QtWidgets.QCheckBox(_("Start on Boot"))
+            self.autostart_checkbox.setChecked(
+                AutostartManager.check_autostart()
+            )
+            self.autostart_checkbox.stateChanged.connect(
+                self.toggle_autostart
+            )
+            general_row.addWidget(self.autostart_checkbox)
+        general_row.addStretch(1)
+        shortcut_label = QtWidgets.QLabel(_("Shortcut"))
+        UIUtils.set_label_role(shortcut_label, "section")
+        general_row.addWidget(shortcut_label)
+        self.shortcut_input = QtWidgets.QLineEdit(
+            self.app.config.get('shortcut', 'ctrl+space')
+        )
+        self.shortcut_input.setFixedWidth(170)
+        general_row.addWidget(self.shortcut_input)
+        content_layout.addLayout(general_row)
+
+        # UI scale: label, slider and live percentage in a single row.
+        # Qt reads QT_SCALE_FACTOR once at startup, so the change is
+        # stored now and applied on the next launch (Save offers to
+        # relaunch immediately).
+        scale_row = QHBoxLayout()
+        scale_row.setSpacing(10)
+        scale_label = QtWidgets.QLabel(_("UI Scale"))
+        UIUtils.set_label_role(scale_label, "section")
+        scale_label.setFixedWidth(label_width)
+        scale_row.addWidget(scale_label)
+
+        self.ui_scale_slider = QtWidgets.QSlider(
+            QtCore.Qt.Orientation.Horizontal
+        )
+        self.ui_scale_slider.setRange(
+            int(round(MIN_UI_SCALE * 100)),
+            int(round(MAX_UI_SCALE * 100)),
+        )
+        self.ui_scale_slider.setSingleStep(UI_SCALE_STEP)
+        self.ui_scale_slider.setPageStep(UI_SCALE_STEP * 2)
+        self.ui_scale_slider.setTickInterval(UI_SCALE_STEP * 2)
+        self.ui_scale_slider.setTickPosition(
+            QtWidgets.QSlider.TickPosition.TicksBelow
+        )
+        self.ui_scale_slider.setToolTip(
+            _("Scale everything from 70% to 140%. Takes effect when "
+              "Writing Tools restarts.")
+        )
+        current_scale = int(
+            round(
+                clamp_ui_scale(
+                    self.app.config.get("ui_scale", DEFAULT_UI_SCALE)
                 )
-                self.autostart_checkbox.stateChanged.connect(
-                    self.toggle_autostart
-                )
-                general_row.addWidget(self.autostart_checkbox)
-            general_row.addStretch(1)
-            shortcut_label = QtWidgets.QLabel(_("Shortcut"))
-            UIUtils.set_label_role(shortcut_label, "section")
-            general_row.addWidget(shortcut_label)
-            self.shortcut_input = QtWidgets.QLineEdit(
-                self.app.config.get('shortcut', 'ctrl+space')
+                * 100
             )
-            self.shortcut_input.setFixedWidth(170)
-            general_row.addWidget(self.shortcut_input)
-            content_layout.addLayout(general_row)
+        )
+        self._initial_ui_scale = current_scale
+        self.ui_scale_slider.setValue(current_scale)
+        self.ui_scale_slider.valueChanged.connect(
+            self._on_ui_scale_changed
+        )
+        scale_row.addWidget(self.ui_scale_slider, 1)
 
-            # UI scale: label, slider and live percentage in a single row.
-            # Qt reads QT_SCALE_FACTOR once at startup, so the change is
-            # stored now and applied on the next launch (Save offers to
-            # relaunch immediately).
-            scale_row = QHBoxLayout()
-            scale_row.setSpacing(10)
-            scale_label = QtWidgets.QLabel(_("UI Scale"))
-            UIUtils.set_label_role(scale_label, "section")
-            scale_label.setFixedWidth(label_width)
-            scale_row.addWidget(scale_label)
-
-            self.ui_scale_slider = QtWidgets.QSlider(
-                QtCore.Qt.Orientation.Horizontal
-            )
-            self.ui_scale_slider.setRange(
-                int(round(MIN_UI_SCALE * 100)),
-                int(round(MAX_UI_SCALE * 100)),
-            )
-            self.ui_scale_slider.setSingleStep(UI_SCALE_STEP)
-            self.ui_scale_slider.setPageStep(UI_SCALE_STEP * 2)
-            self.ui_scale_slider.setTickInterval(UI_SCALE_STEP * 2)
-            self.ui_scale_slider.setTickPosition(
-                QtWidgets.QSlider.TickPosition.TicksBelow
-            )
-            self.ui_scale_slider.setToolTip(
-                _("Scale everything from 70% to 140%. Takes effect when "
-                  "Writing Tools restarts.")
-            )
-            current_scale = int(
-                round(
-                    clamp_ui_scale(
-                        self.app.config.get("ui_scale", DEFAULT_UI_SCALE)
-                    )
-                    * 100
-                )
-            )
-            self._initial_ui_scale = current_scale
-            self.ui_scale_slider.setValue(current_scale)
-            self.ui_scale_slider.valueChanged.connect(
-                self._on_ui_scale_changed
-            )
-            scale_row.addWidget(self.ui_scale_slider, 1)
-
-            self.ui_scale_value_label = QtWidgets.QLabel("")
-            self.ui_scale_value_label.setFixedWidth(38)
-            self.ui_scale_value_label.setAlignment(
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter
-            )
-            self.ui_scale_value_label.setStyleSheet(
-                f"font-size: 13px; font-weight: 600; "
-                f"color: {UIUtils.palette()['accent']};"
-            )
-            scale_row.addWidget(self.ui_scale_value_label)
-            # Fill the percentage now that the label exists.
-            self._on_ui_scale_changed(current_scale)
-            content_layout.addLayout(scale_row)
+        self.ui_scale_value_label = QtWidgets.QLabel("")
+        self.ui_scale_value_label.setFixedWidth(38)
+        self.ui_scale_value_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight
+            | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self.ui_scale_value_label.setStyleSheet(
+            f"font-size: 13px; font-weight: 600; "
+            f"color: {UIUtils.palette()['accent']};"
+        )
+        scale_row.addWidget(self.ui_scale_value_label)
+        # Fill the percentage now that the label exists.
+        self._on_ui_scale_changed(current_scale)
+        content_layout.addLayout(scale_row)
 
         # Provider selection shares its row with the label.
         provider_row = QHBoxLayout()
@@ -593,13 +590,25 @@ class SettingsWindow(QtWidgets.QWidget):
         # Clean name on the left, grey hint ("free tier available") right-aligned
         # in the open list. The stable provider_name stays the config key.
         self.provider_dropdown.setItemDelegate(NoteItemDelegate(self.provider_dropdown))
+        previous_local = None
         for index, provider in enumerate(self.app.providers):
+            is_local = getattr(provider, "tier", "") == "local"
+            if previous_local is False and is_local:
+                # Separator line before the local providers at the end.
+                self.provider_dropdown.insertSeparator(self.provider_dropdown.count())
+                separator = self.provider_dropdown.model().item(
+                    self.provider_dropdown.count() - 1
+                )
+                if separator is not None:
+                    # Not selectable, so it can never become the active provider.
+                    separator.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
             self.provider_dropdown.addItem(provider.display_name, index)
             self.provider_dropdown.setItemData(
                 self.provider_dropdown.count() - 1,
                 provider.display_note,
                 NoteItemDelegate.NOTE_ROLE,
             )
+            previous_local = is_local
 
         def _row_for(provider_name):
             for row in range(self.provider_dropdown.count()):
@@ -651,20 +660,19 @@ class SettingsWindow(QtWidgets.QWidget):
         self.bottom_container = bottom_container
 
         # Add save button to bottom container
-        save_button = QtWidgets.QPushButton(_("Finish AI Setup") if self.providers_only else _("Save"))
+        save_button = QtWidgets.QPushButton(_("Save"))
         UIUtils.set_variant(save_button, "primary")
         save_button.clicked.connect(self.save_settings)
         self.save_button = save_button
         bottom_layout.addWidget(save_button)
 
-        if not self.providers_only:
-            live_hint = QtWidgets.QLabel(
-                _("Changes apply immediately — no restart needed.")
-            )
-            UIUtils.set_label_role(live_hint, "muted")
-            live_hint.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-            live_hint.setWordWrap(True)
-            bottom_layout.addWidget(live_hint)
+        live_hint = QtWidgets.QLabel(
+            _("Changes apply immediately — no restart needed.")
+        )
+        UIUtils.set_label_role(live_hint, "muted")
+        live_hint.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        live_hint.setWordWrap(True)
+        bottom_layout.addWidget(live_hint)
 
         main_layout.addWidget(bottom_container)
 
@@ -800,19 +808,15 @@ class SettingsWindow(QtWidgets.QWidget):
         # Preserve an existing locale; only default to English for new users.
         self.app.config.setdefault('locale', 'en')
 
-        if not self.providers_only:
-            self.app.config['shortcut'] = self.shortcut_input.text().strip() or 'ctrl+space'
-            if self.ui_scale_slider is not None:
-                self.app.config['ui_scale'] = clamp_ui_scale(
-                    self.ui_scale_slider.value() / 100.0
-                )
-            if getattr(self, "model_tier_dropdown", None) is not None:
-                value = self.model_tier_dropdown.currentData()
-                if value is not None:
-                    self.app.config['model_tier_filter'] = str(value)
-        else:
-            self.app.create_tray_icon()
-
+        self.app.config['shortcut'] = self.shortcut_input.text().strip() or 'ctrl+space'
+        if self.ui_scale_slider is not None:
+            self.app.config['ui_scale'] = clamp_ui_scale(
+                self.ui_scale_slider.value() / 100.0
+            )
+        if getattr(self, "model_tier_dropdown", None) is not None:
+            value = self.model_tier_dropdown.currentData()
+            if value is not None:
+                self.app.config['model_tier_filter'] = str(value)
         self.app.config['streaming'] = False
         current = self._current_provider()
         if current is not None:
@@ -848,12 +852,6 @@ class SettingsWindow(QtWidgets.QWidget):
 
         self.app.register_hotkey()
 
-        if self.providers_only:
-            # "Finish AI Setup" completes onboarding; close as before.
-            self.providers_only = False
-            self.close()
-            return
-
         self._show_saved_feedback()
 
         new_scale = clamp_ui_scale(
@@ -888,15 +886,8 @@ class SettingsWindow(QtWidgets.QWidget):
         if button is None:
             return
         try:
-            button.setText(_("Finish AI Setup") if self.providers_only
-                           else _("Save"))
+            button.setText(_("Save"))
             button.setEnabled(True)
         except RuntimeError:
             # Window was closed while the confirmation was showing.
             pass
-
-    def closeEvent(self, event):
-        """Handle window close event."""
-        if self.providers_only:
-            self.close_signal.emit()
-        super().closeEvent(event)

@@ -10,7 +10,6 @@ import time
 import pyperclip
 import ui.AboutWindow
 import ui.CustomPopupWindow
-import ui.OnboardingWindow
 import ui.ResponseWindow
 import ui.SettingsWindow
 from aiprovider import create_providers, obfuscate_api_key
@@ -95,7 +94,6 @@ class WritingToolApp(QtWidgets.QApplication):
             self.options_path
         )
 
-        self.onboarding_window = None
         self.popup_window = None
         self.tray_icon = None
         self.tray_menu = None
@@ -136,12 +134,17 @@ class WritingToolApp(QtWidgets.QApplication):
         # external editor) are picked up without restarting the app.
         self._setup_options_watcher()
 
-        if not self.config:
-            logging.debug("No config found, showing onboarding")
-            self.show_onboarding()
+        first_run = not self.config
+        if first_run:
+            # No setup wizard: start with defaults and open the normal
+            # Settings window so the user can pick a provider and paste a key.
+            logging.debug("No config found, starting with defaults")
+            self.config = {}
         else:
             logging.debug("Config found, setting up hotkey and tray icon")
-            self._init_configured_app()
+        self._init_configured_app()
+        if first_run:
+            self.show_settings()
 
         self.recent_triggers = []  # Track recent hotkey triggers
         self.TRIGGER_WINDOW = 1.5  # Time window in seconds
@@ -198,7 +201,6 @@ class WritingToolApp(QtWidgets.QApplication):
         ui.AboutWindow._ = self._
         ui.SettingsWindow._ = self._
         ui.ResponseWindow._ = self._
-        ui.OnboardingWindow._ = self._
         ui.CustomPopupWindow._ = self._
 
     def retranslate_ui(self):
@@ -699,12 +701,6 @@ class WritingToolApp(QtWidgets.QApplication):
     # ------------------------------------------------------------------
     # Windows
     # ------------------------------------------------------------------
-
-    def show_onboarding(self):
-        logging.debug("Showing onboarding window")
-        self.onboarding_window = ui.OnboardingWindow.OnboardingWindow(self)
-        self.onboarding_window.close_signal.connect(self.exit_app)
-        self.onboarding_window.show()
 
     # ------------------------------------------------------------------
     # Hotkey registration
@@ -1281,10 +1277,16 @@ class WritingToolApp(QtWidgets.QApplication):
         self.tray_icon.setToolTip("Writing Tools")
         self.tray_menu = QtWidgets.QMenu()
         self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
 
         self.update_tray_menu()
         self.tray_icon.show()
         logging.debug("Tray icon displayed")
+
+    def _on_tray_activated(self, reason):
+        """Double-clicking the tray icon opens Settings."""
+        if reason == QtWidgets.QSystemTrayIcon.ActivationReason.DoubleClick:
+            self.show_settings()
 
     def update_tray_menu(self):
         if self.tray_menu is None:
@@ -1293,7 +1295,7 @@ class WritingToolApp(QtWidgets.QApplication):
         self.apply_dark_mode_styles(self.tray_menu)
 
         settings_action = self.tray_menu.addAction(self._("Settings"))
-        settings_action.triggered.connect(self.show_settings)
+        settings_action.triggered.connect(lambda _checked=False: self.show_settings())
 
         self.toggle_action = self.tray_menu.addAction(
             self._("Resume") if self.paused else self._("Pause")
@@ -1415,18 +1417,21 @@ class WritingToolApp(QtWidgets.QApplication):
         except RuntimeError:
             logging.debug("Response window was deleted before reply arrived")
 
-    def show_settings(self, providers_only=False):
+    def show_settings(self):
         logging.debug("Showing settings window")
         if self.settings_window is not None:
             try:
+                if self.settings_window.isVisible():
+                    # Already open (e.g. double-click on the tray icon):
+                    # just bring it to the front.
+                    self.settings_window.raise_()
+                    self.settings_window.activateWindow()
+                    return
                 self.settings_window.close()
-            except Exception:
-                pass
+            except RuntimeError:
+                pass  # the Qt object is already gone
             self.settings_window = None
-        self.settings_window = ui.SettingsWindow.SettingsWindow(
-            self, providers_only=providers_only
-        )
-        self.settings_window.close_signal.connect(self.exit_app)
+        self.settings_window = ui.SettingsWindow.SettingsWindow(self)
         self.settings_window.retranslate_ui()
         self.settings_window.show()
 

@@ -122,8 +122,8 @@ def read_json(path: str):
     """Read JSON, returning None on missing/corrupt files (never raises)."""
     try:
         # utf-8-sig silently accepts a BOM. Windows Notepad and some editors
-        # add one; treating that as corruption would dump the user back into
-        # onboarding and discard their provider settings.
+        # add one; treating that as corruption would discard the user's
+        # provider settings.
         with open(path, "r", encoding="utf-8-sig") as handle:
             return json.load(handle)
     except FileNotFoundError:

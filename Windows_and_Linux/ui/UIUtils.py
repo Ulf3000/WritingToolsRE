@@ -50,7 +50,20 @@ class NoteItemDelegate(QtWidgets.QStyledItemDelegate):
 
     NOTE_ROLE = int(QtCore.Qt.ItemDataRole.UserRole) + 1
 
+    @staticmethod
+    def _is_separator(index):
+        return (
+            index.data(QtCore.Qt.ItemDataRole.AccessibleDescriptionRole) == "separator"
+        )
+
     def paint(self, painter, option, index):
+        if self._is_separator(index):
+            painter.save()
+            painter.setPen(QtGui.QPen(QtGui.QColor(UIUtils.palette()["border"]), 1))
+            y = option.rect.center().y()
+            painter.drawLine(option.rect.left() + 6, y, option.rect.right() - 6, y)
+            painter.restore()
+            return
         opt = QtWidgets.QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         name = opt.text
@@ -84,7 +97,7 @@ class NoteItemDelegate(QtWidgets.QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
-        size.setHeight(max(size.height(), 28))
+        size.setHeight(9 if self._is_separator(index) else max(size.height(), 28))
         return size
 
 

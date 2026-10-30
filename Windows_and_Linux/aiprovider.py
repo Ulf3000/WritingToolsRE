@@ -2874,5 +2874,6 @@ def create_providers(app) -> list[AIProvider]:
     if not providers:
         # Absolutely should not happen, but never leave the app provider-less.
         providers.append(GeminiProvider(app))
-    providers.sort(key=lambda p: p.display_name.lower())
+    # Local providers (LM Studio, Ollama) go to the end of the list.
+    providers.sort(key=lambda p: (p.tier == "local", p.display_name.lower()))
     return providers
