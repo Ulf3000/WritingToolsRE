@@ -31,6 +31,37 @@ from ui.UIUtils import UIUtils
 
 _ = gettext.gettext
 
+# PyInstaller variables that describe the *current* process's temporary
+# extraction directory. They must never be handed to a relaunched copy.
+_PYI_ENV_VARS = (
+    "_PYI_APPLICATION_HOME_DIR",
+    "_PYI_ARCHIVE_FILE",
+    "_PYI_PARENT_PROCESS_LEVEL",
+    "_PYI_SPLASH_IPC",
+    "_MEIPASS2",
+)
+
+
+def build_relaunch_env():
+    """
+    Environment for a restarted copy of Writing Tools.
+
+    Without PYINSTALLER_RESET_ENVIRONMENT the new process inherits the
+    _PYI_* variables and treats itself as a sub-process of this one: it then
+    uses this process's extraction directory, which the bootloader deletes on
+    exit. The result was a crash during startup with
+    "ModuleNotFoundError: No module named '_overlapped'". The switch is
+    PyInstaller's documented way to force a fresh top-level process, and the
+    stale variables are removed as well so an older/newer bootloader behaves
+    the same.
+    """
+    env = os.environ.copy()
+    env["WT_RELAUNCH"] = "1"
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    for name in _PYI_ENV_VARS:
+        env.pop(name, None)
+    return env
+
 
 class _SelectedTextHolder:
     """
@@ -1446,8 +1477,7 @@ class WritingToolApp(QtWidgets.QApplication):
                 )
                 command = [sys.executable, script]
 
-            env = os.environ.copy()
-            env["WT_RELAUNCH"] = "1"
+            env = build_relaunch_env()
             kwargs = {
                 "cwd": get_app_dir(),
                 "env": env,
