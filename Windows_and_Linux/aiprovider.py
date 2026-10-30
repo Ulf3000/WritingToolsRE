@@ -917,11 +917,13 @@ class GeminiProvider(AIProvider):
         genai_types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
     ]
 
-    def __init__(self, app):
+    def __init__(self, app, paid: bool = False):
         self.close_requested = False
         self.client = None
         self.api_key = ""
-        self.model_name = "gemini-flash-latest"
+        self.paid = paid
+        default_model = "gemini-3.1-pro-preview" if paid else "gemini-flash-latest"
+        self.model_name = default_model
 
         settings = [
             TextSetting(
@@ -932,7 +934,7 @@ class GeminiProvider(AIProvider):
             DropdownSetting(
                 name="model_name",
                 display_name="Model",
-                default_value="gemini-flash-latest",
+                default_value=default_model,
                 description="Select a Gemini model to use",
                 options=[
                     ("⭐ Gemini 3.8 Flash (recommended | latest)",
@@ -973,16 +975,23 @@ class GeminiProvider(AIProvider):
         ]
         super().__init__(
             app,
-            "Gemini (Recommended)",
+            "Gemini (Paid / Billing)" if paid else "Gemini (Recommended)",
             settings,
-            "• Google Gemini has a generous free tier.\n"
-            "• Get a free API key from Google AI Studio.\n"
-            "• Tip: if you hit the daily limit, switch to a Gemma model\n"
-            "  (unlimited but slower) or one of the other free providers.",
+            (
+                "• Google Gemini paid tier (billing enabled).\n"
+                "• Higher rate limits and access to Pro models.\n"
+                "• Get an API key from Google AI Studio."
+            ) if paid else (
+                "• Google Gemini has a generous free tier.\n"
+                "• Get a free API key from Google AI Studio.\n"
+                "• Tip: if you hit the daily limit, switch to a Gemma model\n"
+                "  (unlimited but slower) or one of the other free providers."
+            ),
             "gemini",
-            "Get Free API Key",
+            "Get API Key" if paid else "Get Free API Key",
             lambda: webbrowser.open("https://aistudio.google.com/app/apikey"),
         )
+        self.tier = "paid" if paid else "free"
 
     # Thinking levels documented by Google (October 2026). The API does not
     # expose supported levels per model, so we keep this table and use it to
@@ -1377,6 +1386,21 @@ class GeminiProvider(AIProvider):
         self.model_specs = specs
         self.cached_models = models
         return models, f"Found {len(models)} Gemini model(s)."
+
+
+class GeminiPaidProvider(GeminiProvider):
+    """
+    Gemini with billing enabled (paid tier).
+
+    Same API and key as the free entry, but classified as a paid provider so
+    it sorts after the free-tier providers. Useful for accounts with credits
+    or higher rate limits.
+    """
+
+    TIER = "paid"
+
+    def __init__(self, app):
+        super().__init__(app, paid=True)
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -1922,6 +1946,7 @@ class PresetOpenAIProvider(OpenAICompatibleProvider):
     EXTRA_HEADERS = None
     ALLOW_EMPTY_KEY = False
     TEMPERATURE = 0.5
+    TIER = "free"  # free-tier presets; paid/local subclasses override
 
     def __init__(self, app):
         settings = [
@@ -2730,6 +2755,7 @@ class OllamaProvider(AIProvider):
 # Order matters: the first provider is the default for brand-new installs.
 PROVIDER_CLASSES = [
     GeminiProvider,
+    GeminiPaidProvider,
     OpenRouterProvider,
     GroqProvider,
     CerebrasProvider,
