@@ -58,7 +58,7 @@ from google import genai
 from google.genai import types as genai_types
 from ollama import Client as OllamaClient
 from openai import OpenAI
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 from PySide6.QtWidgets import QVBoxLayout
 
 from apputils import clean_model_text, normalize_base_url
@@ -533,27 +533,15 @@ class DropdownSetting(AIProviderSetting):
         # keeps its own filter.
         self.provider = provider
 
+    # Shown when the current filter leaves nothing to choose from.
+    _EMPTY_TEXT = "No models match this filter"
+
     def render_to_layout(self, layout: QVBoxLayout):
         row_layout = QtWidgets.QHBoxLayout()
         label = QtWidgets.QLabel(self.display_name)
         UIUtils.set_label_role(label, "section")
         row_layout.addWidget(label)
         self.dropdown = NoWheelComboBox()
-
-        for option, value in self._filtered_options(keep=self.internal_value):
-            self.dropdown.addItem(option, value)
-
-        if self.allow_custom:
-            self.dropdown.addItem("🔧 Custom…", self._CUSTOM_SENTINEL)
-
-        index = self.dropdown.findData(self.internal_value)
-        if index != -1:
-            self.dropdown.setCurrentIndex(index)
-        elif self.allow_custom and self.internal_value:
-            custom_index = self.dropdown.findData(self._CUSTOM_SENTINEL)
-            if custom_index != -1:
-                self.dropdown.setCurrentIndex(custom_index)
-
         row_layout.addWidget(self.dropdown)
         layout.addLayout(row_layout)
 
@@ -564,17 +552,73 @@ class DropdownSetting(AIProviderSetting):
 
             self.custom_input = QtWidgets.QLineEdit()
             self.custom_input.setPlaceholderText(self.custom_placeholder)
-
-            if self.dropdown.currentData() == self._CUSTOM_SENTINEL and self.internal_value:
-                self.custom_input.setText(str(self.internal_value))
-
             custom_row_layout.addWidget(self.custom_input)
             layout.addWidget(self.custom_input_container)
 
-            self.dropdown.currentIndexChanged.connect(self._on_dropdown_changed)
-            self._update_custom_input_visibility()
+        self._populate_dropdown()
+        self.dropdown.currentIndexChanged.connect(self._on_dropdown_changed)
+        self._update_custom_input_visibility()
+
+    # -- dropdown contents (one place for every rebuild) -------------------
+
+    def _populate_dropdown(self):
+        """Rebuild the items for the current filter and select the value."""
+        if self.dropdown is None:
+            return
+        filtered = self._filtered_options()
+        self.dropdown.blockSignals(True)
+        try:
+            self.dropdown.clear()
+            for label, value in filtered:
+                self.dropdown.addItem(label, value)
+            if not filtered:
+                # Strict filter: this provider has no model of that kind.
+                # Say so instead of quietly showing a model from the other
+                # tier, which would look like the selection moved over.
+                self.dropdown.addItem(self._EMPTY_TEXT, None)
+                item = self.dropdown.model().item(0)
+                if item is not None:
+                    item.setFlags(QtCore.Qt.ItemFlag.NoItemFlags)
+            if self.allow_custom:
+                self.dropdown.addItem("🔧 Custom…", self._CUSTOM_SENTINEL)
+            self._select_current()
+        finally:
+            self.dropdown.blockSignals(False)
+
+    def _select_current(self):
+        """Select ``internal_value``; never invent a different model."""
+        if self.dropdown is None:
+            return
+        if self.internal_value:
+            index = self.dropdown.findData(self.internal_value)
+            if index != -1 and self.dropdown.itemData(index) is not None:
+                self.dropdown.setCurrentIndex(index)
+                if self.custom_input is not None:
+                    self.custom_input.setText("")
+                return
+
+            # A genuinely custom id (not part of the catalogue) stays editable.
+            known = {value for _label, value in (self.full_options or [])}
+            if self.allow_custom and self.internal_value not in known:
+                custom_index = self.dropdown.findData(self._CUSTOM_SENTINEL)
+                if custom_index != -1:
+                    self.dropdown.setCurrentIndex(custom_index)
+                    if self.custom_input is not None:
+                        self.custom_input.setText(str(self.internal_value))
+                    return
+
+        # The saved model is hidden by the filter (or there is none yet):
+        # show the placeholder / an empty selection, but keep the value.
+        if self.dropdown.count() and self.dropdown.itemData(0) is None:
+            self.dropdown.setCurrentIndex(0)
+        else:
+            self.dropdown.setCurrentIndex(-1)
 
     def _on_dropdown_changed(self):
+        if self.dropdown is not None:
+            data = self.dropdown.currentData()
+            if data is not None and data != self._CUSTOM_SENTINEL:
+                self.internal_value = str(data)
         self._update_custom_input_visibility()
 
     def _update_custom_input_visibility(self):
@@ -587,81 +631,26 @@ class DropdownSetting(AIProviderSetting):
     def set_value(self, value):
         self.internal_value = value if value is not None else ""
         if self.dropdown is not None:
-            index = self.dropdown.findData(self.internal_value)
-            if index != -1:
-                self.dropdown.setCurrentIndex(index)
-            elif self.allow_custom:
-                custom_index = self.dropdown.findData(self._CUSTOM_SENTINEL)
-                if custom_index != -1 and self.internal_value:
-                    self.dropdown.setCurrentIndex(custom_index)
-                    if self.custom_input is not None:
-                        self.custom_input.setText(str(self.internal_value))
-        elif self.custom_input is not None:
-            self.custom_input.setText(str(self.internal_value))
-        if self.dropdown is not None:
+            self.dropdown.blockSignals(True)
+            try:
+                self._select_current()
+            finally:
+                self.dropdown.blockSignals(False)
             self._update_custom_input_visibility()
 
     def set_options(self, options):
         """
-        Replace the dropdown options with a freshly fetched model list.
+        Replace the catalogue (e.g. after "Refresh available models").
 
-        The current value is preserved when it still appears in the new list.
-        If it does not (common after a provider retires a model), it stays
-        visible as a custom value so the user can pick a replacement without
-        silently losing what they had configured.
+        The selected value is kept as-is: the list only decides what can be
+        picked next, never what is currently configured.
         """
         options = [(str(label), str(value)) for label, value in (options or [])]
-        current = self.get_value() if self.dropdown is not None else str(
-            self.internal_value or ""
-        )
         self.options = options
         self.full_options = list(options)
-        available = {value for _label, value in options}
-
         if self.dropdown is None:
-            # The provider UI is not on screen right now; keep the value and
-            # use the new list next time it is rendered. If the old value is
-            # no longer offered and this dropdown does not allow custom
-            # values, move to the first valid option.
-            if (options and current not in available
-                    and not self.allow_custom):
-                current = options[0][1]
-            self.internal_value = current or self.internal_value
             return
-
-        self.dropdown.blockSignals(True)
-        try:
-            self.dropdown.clear()
-            filtered = self._filtered_options(keep=current)
-            for label, value in filtered:
-                self.dropdown.addItem(label, value)
-            if self.allow_custom:
-                self.dropdown.addItem("🔧 Custom…", self._CUSTOM_SENTINEL)
-
-            index = self.dropdown.findData(current)
-            if index != -1:
-                self.dropdown.setCurrentIndex(index)
-                selected = current
-            elif self.allow_custom and current:
-                custom_index = self.dropdown.findData(self._CUSTOM_SENTINEL)
-                if custom_index != -1:
-                    self.dropdown.setCurrentIndex(custom_index)
-                if self.custom_input is not None:
-                    self.custom_input.setText(str(current))
-                selected = current
-            elif filtered:
-                self.dropdown.setCurrentIndex(0)
-                selected = filtered[0][1]
-            elif options:
-                self.dropdown.setCurrentIndex(0)
-                selected = options[0][1]
-            else:
-                selected = ""
-
-            self.internal_value = selected
-        finally:
-            self.dropdown.blockSignals(False)
-
+        self._populate_dropdown()
         self._update_custom_input_visibility()
 
     @property
@@ -669,13 +658,8 @@ class DropdownSetting(AIProviderSetting):
         """This provider's Free/Paid/All choice ("all" when unknown)."""
         return getattr(self.provider, "model_tier_filter", "all")
 
-    def _filtered_options(self, keep=None):
-        """
-        Options that match this provider's Free/Paid/All filter.
-
-        ``keep`` is the currently selected model: it always stays in the list,
-        so switching the filter never throws away the user's selection.
-        """
+    def _filtered_options(self):
+        """Catalogue entries that match this provider's Free/Paid/All filter."""
         options = list(getattr(self, "full_options", None) or self.options or [])
         mode = self.tier_filter
         if mode == "all" or self.provider is None:
@@ -688,7 +672,7 @@ class DropdownSetting(AIProviderSetting):
             except Exception:  # noqa: BLE001
                 is_free = None
             # Unknown tier is kept in every filter mode.
-            if is_free is None or is_free == want_free or value == keep:
+            if is_free is None or is_free == want_free:
                 result.append((label, value))
         return result
 
@@ -699,7 +683,11 @@ class DropdownSetting(AIProviderSetting):
             return (self.custom_input.text().strip()
                     if self.custom_input is not None else "")
         data = self.dropdown.currentData()
-        return "" if data is None else str(data)
+        if data is None:
+            # Nothing selected because the filter hides it: keep the model
+            # that was configured, never save an empty value.
+            return str(self.internal_value or "")
+        return str(data)
 
     def release_ui(self):
         self.dropdown = None
@@ -874,15 +862,29 @@ class AIProvider(ABC):
             setting.set_value(value)
         self.after_load()
 
-    def save_config(self):
-        """Save provider configuration into the main config file."""
+    def save_config(self, values=None, persist=True):
+        """
+        Write this provider's configuration into the main config.
+
+        ``values`` lets the Settings window hand over the values the user
+        actually saw (its per-provider draft); without it the live widgets are
+        read. ``persist=False`` skips writing config.json so a caller can
+        update several providers and save once.
+        """
         config = {}
         for setting in self.settings:
-            value = setting.get_value()
+            if values is not None and setting.name in values:
+                value = values[setting.name]
+            else:
+                value = setting.get_value()
             if setting.name == "api_key":
                 value = obfuscate_api_key(value)
             config[setting.name] = value
-        config["model_tier_filter"] = normalize_tier_filter(self.model_tier_filter)
+        if values is not None and "model_tier_filter" in values:
+            tier = values["model_tier_filter"]
+        else:
+            tier = self.model_tier_filter
+        config["model_tier_filter"] = normalize_tier_filter(tier)
 
         # Persist the live model catalog (and its specs) so refreshing once
         # keeps retired models out of the dropdown after a restart, even when
@@ -904,7 +906,8 @@ class AIProvider(ABC):
         if not isinstance(self.app.config, dict):
             self.app.config = {}
         self.app.config.setdefault("providers", {})[self.provider_name] = config
-        self.app.save_config(self.app.config)
+        if persist:
+            self.app.save_config(self.app.config)
 
     # -- helpers shared by implementations ---------------------------------
 

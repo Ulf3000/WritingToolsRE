@@ -2,7 +2,12 @@ import logging
 import os
 import threading
 
-from aiprovider import AIProvider, _spec_summary, normalize_tier_filter
+from aiprovider import (
+    AIProvider,
+    _spec_summary,
+    deobfuscate_api_key,
+    normalize_tier_filter,
+)
 from apputils import resource_path
 from defaults import (
     DEFAULT_UI_SCALE,
@@ -43,7 +48,11 @@ class SettingsWindow(QtWidgets.QWidget):
         self._model_refresh_button = None
         self._model_details_label = None
         self._model_request_id = 0
-        self._pending_filters = {}
+        # Unsaved edits, keyed by provider name. Switching providers must not
+        # throw away what was typed, and nothing is written to config.json
+        # until the user presses Save.
+        self._drafts = {}
+        self._rendered_provider = None
         self.save_button = None
         self.scroll_area = None
         self.scroll_content = None
@@ -71,6 +80,9 @@ class SettingsWindow(QtWidgets.QWidget):
         """
         if provider is None:
             return
+        # Keep whatever is on screen for the provider we are leaving.
+        self._capture_provider_draft()
+
         # Any fetch still in flight belongs to the previous provider.
         self._model_request_id += 1
         self._model_setting = None
@@ -167,20 +179,20 @@ class SettingsWindow(QtWidgets.QWidget):
         if provider.provider_name not in self.app.config["providers"]:
             self.app.config["providers"][provider.provider_name] = {}
 
-        # Every provider has its own Free/Paid/All filter: take this window's
-        # pending choice, else the one stored in the provider's own config.
-        provider.model_tier_filter = self._pending_filters.get(
-            provider.provider_name,
-            normalize_tier_filter(
-                self.app.config["providers"][provider.provider_name].get(
-                    "model_tier_filter"
-                )
-            ),
+        # Values come from this session's draft (if the provider was edited
+        # already) or from its own saved config block. Nothing is invented.
+        saved = self.app.config["providers"][provider.provider_name]
+        draft = self._drafts.get(provider.provider_name, {})
+        provider.model_tier_filter = normalize_tier_filter(
+            draft.get("model_tier_filter", saved.get("model_tier_filter"))
         )
 
         # Add provider settings
         for setting in provider.settings:
-            setting.set_value(self.app.config["providers"][provider.provider_name].get(setting.name, setting.default_value))
+            value = draft.get(setting.name, saved.get(setting.name, setting.default_value))
+            if setting.name == "api_key":
+                value = deobfuscate_api_key(value)
+            setting.set_value(value)
             is_model_setting = (
                 setting.name in ("api_model", "model_name")
                 and hasattr(setting, "set_options")
@@ -740,12 +752,33 @@ class SettingsWindow(QtWidgets.QWidget):
             return
         value = normalize_tier_filter(dropdown.currentData())
         provider.model_tier_filter = value
-        self._pending_filters[provider.provider_name] = value
+        self._drafts.setdefault(provider.provider_name, {})[
+            "model_tier_filter"
+        ] = value
         setting = self._model_setting
         if setting is not None:
             setting.set_options(setting.full_options)
             self._update_model_details(provider, setting)
         self._schedule_fit_height()
+
+    def _capture_provider_draft(self):
+        """Remember the visible values of the current provider, unsaved."""
+        provider = getattr(self, "_rendered_provider", None)
+        if provider is None:
+            return
+        values = self._drafts.setdefault(provider.provider_name, {})
+        for setting in provider.settings:
+            rendered = (getattr(setting, "input", None) is not None
+                        or getattr(setting, "dropdown", None) is not None)
+            if not rendered:
+                continue
+            try:
+                values[setting.name] = setting.get_value()
+            except (AttributeError, RuntimeError):
+                pass
+        values["model_tier_filter"] = normalize_tier_filter(
+            getattr(provider, "model_tier_filter", "all")
+        )
 
     @staticmethod
     def toggle_autostart(state):
@@ -819,7 +852,20 @@ class SettingsWindow(QtWidgets.QWidget):
         if selected_provider is None:
             logging.error("Provider dropdown selection is invalid")
             return
-        selected_provider.save_config()
+
+        # Write every provider that was edited in this session, each into its
+        # own block, then persist config.json once.
+        self._capture_provider_draft()
+        for provider in self.app.providers:
+            values = self._drafts.get(provider.provider_name)
+            if not values:
+                continue
+            provider.model_tier_filter = normalize_tier_filter(
+                values.get("model_tier_filter")
+            )
+            provider.save_config(values=values, persist=False)
+        self._drafts.clear()
+        self.app.save_config(self.app.config)
 
         provider_name = self.app.config.get('provider', selected_provider.provider_name)
         self.app.current_provider = next(
