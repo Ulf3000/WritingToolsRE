@@ -512,15 +512,19 @@ class DropdownSetting(AIProviderSetting):
     def __init__(self, name: str, display_name: str = None,
                  default_value: str = None, description: str = None,
                  options: list = None, allow_custom: bool = False,
-                 custom_placeholder: str = "Enter custom value"):
+                 custom_placeholder: str = "Enter custom value",
+                 app=None, free_predicate: callable = None):
         super().__init__(name, display_name, default_value, description)
         self.options = options if options else []
+        self.full_options = list(self.options)
         self.internal_value = default_value or ""
         self.dropdown = None
         self.allow_custom = allow_custom
         self.custom_placeholder = custom_placeholder
         self.custom_input = None
         self.custom_input_container = None
+        self.app = app
+        self.free_predicate = free_predicate
 
     def render_to_layout(self, layout: QVBoxLayout):
         row_layout = QtWidgets.QHBoxLayout()
@@ -529,7 +533,7 @@ class DropdownSetting(AIProviderSetting):
         row_layout.addWidget(label)
         self.dropdown = NoWheelComboBox()
 
-        for option, value in self.options:
+        for option, value in self._filtered_options():
             self.dropdown.addItem(option, value)
 
         if self.allow_custom:
@@ -604,6 +608,7 @@ class DropdownSetting(AIProviderSetting):
             self.internal_value or ""
         )
         self.options = options
+        self.full_options = list(options)
         available = {value for _label, value in options}
 
         if self.dropdown is None:
@@ -620,7 +625,8 @@ class DropdownSetting(AIProviderSetting):
         self.dropdown.blockSignals(True)
         try:
             self.dropdown.clear()
-            for label, value in options:
+            filtered = self._filtered_options()
+            for label, value in filtered:
                 self.dropdown.addItem(label, value)
             if self.allow_custom:
                 self.dropdown.addItem("🔧 Custom…", self._CUSTOM_SENTINEL)
@@ -636,6 +642,9 @@ class DropdownSetting(AIProviderSetting):
                 if self.custom_input is not None:
                     self.custom_input.setText(str(current))
                 selected = current
+            elif filtered:
+                self.dropdown.setCurrentIndex(0)
+                selected = filtered[0][1]
             elif options:
                 self.dropdown.setCurrentIndex(0)
                 selected = options[0][1]
@@ -647,6 +656,34 @@ class DropdownSetting(AIProviderSetting):
             self.dropdown.blockSignals(False)
 
         self._update_custom_input_visibility()
+
+    @property
+    def tier_filter(self):
+        app = getattr(self, "app", None)
+        if app is not None and isinstance(getattr(app, "config", None), dict):
+            return app.config.get("model_tier_filter", "all")
+        return "all"
+
+    def _filtered_options(self):
+        options = list(getattr(self, "full_options", None) or self.options or [])
+        mode = self.tier_filter
+        if mode == "all":
+            return options
+        want_free = (mode == "free")
+        result = []
+        for label, value in options:
+            is_free = None
+            pred = getattr(self, "free_predicate", None)
+            if callable(pred):
+                try:
+                    is_free = pred(value)
+                except Exception:  # noqa: BLE001
+                    is_free = None
+            if is_free is None:
+                result.append((label, value))
+            elif is_free == want_free:
+                result.append((label, value))
+        return result
 
     def get_value(self):
         if self.dropdown is None:
@@ -678,6 +715,10 @@ class AIProvider(ABC):
     # free providers first, then paid, then local ones.
     TIER = "free"  # "free" | "paid" | "local"
 
+    # Whether every model this provider offers is free (True), paid (False),
+    # or unknown/mixed (None). Used by the model-tier filter in Settings.
+    FREE_TIER = None
+
     def __init__(self, app, provider_name: str, settings: List[AIProviderSetting],
                  description: str = "An unfinished AI provider!",
                  logo: str = None,
@@ -691,10 +732,15 @@ class AIProvider(ABC):
         self.button_text = button_text
         self.button_action = button_action
         self.tier = type(self).TIER
+        self.free_tier = type(self).FREE_TIER
         # Live-discovered model list + specs (persisted in config so the
         # fetched catalog survives restarts).
         self.cached_models: list[tuple[str, str]] = []
         self.model_specs: dict[str, dict] = {}
+
+    def model_is_free(self, model_id: str):
+        """Return True/False/None for a model id (None = unknown)."""
+        return self.free_tier
 
     @abstractmethod
     def get_response(self, system_instruction: str, prompt,
@@ -790,6 +836,8 @@ class AIProvider(ABC):
         }
         self.cached_models = models
         setting.options = models
+        if hasattr(setting, "full_options"):
+            setting.full_options = list(models)
 
     def load_config(self, config: dict):
         """Load configuration settings into the provider."""
@@ -956,6 +1004,8 @@ class GeminiProvider(AIProvider):
                 ],
                 allow_custom=True,
                 custom_placeholder="e.g., gemini-3.8-flash",
+                app=app,
+                free_predicate=self.model_is_free,
             ),
             DropdownSetting(
                 name="thinking_level",
@@ -992,6 +1042,12 @@ class GeminiProvider(AIProvider):
             lambda: webbrowser.open("https://aistudio.google.com/app/apikey"),
         )
         self.tier = "paid" if paid else "free"
+
+    def model_is_free(self, model_id: str):
+        if getattr(self, "paid", False):
+            return False
+        mid = (model_id or "").lower()
+        return ("flash" in mid or "gemma" in mid or "lite" in mid)
 
     # Thinking levels documented by Google (October 2026). The API does not
     # expose supported levels per model, so we keep this table and use it to
@@ -1398,6 +1454,7 @@ class GeminiPaidProvider(GeminiProvider):
     """
 
     TIER = "paid"
+    FREE_TIER = False
 
     def __init__(self, app):
         super().__init__(app, paid=True)
@@ -1963,6 +2020,8 @@ class PresetOpenAIProvider(OpenAICompatibleProvider):
                 options=self.MODELS,
                 allow_custom=True,
                 custom_placeholder=self.MODEL_PLACEHOLDER,
+                app=app,
+                free_predicate=self.model_is_free,
             ),
         ]
         super().__init__(
@@ -1983,6 +2042,7 @@ class PresetOpenAIProvider(OpenAICompatibleProvider):
 
 class OpenRouterProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "OpenRouter (Free Models)"
+    FREE_TIER = True
     BASE_URL = "https://openrouter.ai/api/v1"
     DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning:free"
     KEY_URL = "https://openrouter.ai/keys"
@@ -2028,6 +2088,7 @@ class OpenRouterProvider(PresetOpenAIProvider):
 
 class GroqProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Groq (Free Tier)"
+    FREE_TIER = True
     BASE_URL = "https://api.groq.com/openai/v1"
     DEFAULT_MODEL = "openai/gpt-oss-120b"
     KEY_URL = "https://console.groq.com/keys"
@@ -2051,6 +2112,7 @@ class GroqProvider(PresetOpenAIProvider):
 
 class CerebrasProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Cerebras (Free Tier)"
+    FREE_TIER = True
     BASE_URL = "https://api.cerebras.ai/v1"
     DEFAULT_MODEL = "gpt-oss-120b"
     KEY_URL = "https://cloud.cerebras.ai/"
@@ -2071,6 +2133,7 @@ class CerebrasProvider(PresetOpenAIProvider):
 
 class MistralProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Mistral (Free Tier)"
+    FREE_TIER = True
     BASE_URL = "https://api.mistral.ai/v1"
     DEFAULT_MODEL = "mistral-small-latest"
     KEY_URL = "https://console.mistral.ai/api-keys/"
@@ -2112,6 +2175,7 @@ class TogetherAIProvider(PresetOpenAIProvider):
 
 class HuggingFaceProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Hugging Face (Free Credits)"
+    FREE_TIER = True
     BASE_URL = "https://router.huggingface.co/v1"
     DEFAULT_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
     KEY_URL = "https://huggingface.co/settings/tokens"
@@ -2136,6 +2200,7 @@ class HuggingFaceProvider(PresetOpenAIProvider):
 
 class CohereProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Cohere (Free Trial)"
+    FREE_TIER = True
     BASE_URL = "https://api.cohere.ai/compatibility/v1"
     DEFAULT_MODEL = "command-a-03-2025"
     KEY_URL = "https://dashboard.cohere.com/api-keys"
@@ -2159,6 +2224,7 @@ class CohereProvider(PresetOpenAIProvider):
 
 class SambaNovaProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "SambaNova (Free Tier)"
+    FREE_TIER = True
     BASE_URL = "https://api.sambanova.ai/v1"
     DEFAULT_MODEL = "Meta-Llama-3.3-70B-Instruct"
     KEY_URL = "https://cloud.sambanova.ai/apis"
@@ -2183,6 +2249,7 @@ class SambaNovaProvider(PresetOpenAIProvider):
 
 class NvidiaProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "NVIDIA NIM (Free Credits)"
+    FREE_TIER = True
     BASE_URL = "https://integrate.api.nvidia.com/v1"
     DEFAULT_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
     KEY_URL = "https://build.nvidia.com/"
@@ -2208,6 +2275,7 @@ class NvidiaProvider(PresetOpenAIProvider):
 
 class CloudflareProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Cloudflare Workers AI (Free)"
+    FREE_TIER = True
     BASE_URL = ""  # Resolved per-account below
     DEFAULT_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
     KEY_URL = "https://dash.cloudflare.com/profile/api-tokens"
@@ -2368,6 +2436,7 @@ class CloudflareProvider(PresetOpenAIProvider):
 
 class ZhipuProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "Zhipu GLM (Free)"
+    FREE_TIER = True
     BASE_URL = "https://open.bigmodel.cn/api/paas/v4"
     DEFAULT_MODEL = "glm-5.3-flash"
     KEY_URL = "https://open.bigmodel.cn/usercenter/apikeys"
@@ -2400,6 +2469,7 @@ class OpenCodeProvider(PresetOpenAIProvider):
 
     PROVIDER_NAME = "OpenCode (Console)"
     TIER = "paid"
+    FREE_TIER = False
     BASE_URL = "https://opencode.ai/inference/openai/v1"
     DEFAULT_MODEL = "deepseek-v4.1-flash"
     KEY_URL = "https://opencode.ai/console"
@@ -2456,6 +2526,7 @@ class OpenAIProvider(PresetOpenAIProvider):
 
     PROVIDER_NAME = "OpenAI (ChatGPT)"
     TIER = "paid"
+    FREE_TIER = False
     BASE_URL = "https://api.openai.com/v1"
     DEFAULT_MODEL = "gpt-4o-mini"
     KEY_URL = "https://platform.openai.com/api-keys"
@@ -2491,6 +2562,7 @@ class AnthropicProvider(PresetOpenAIProvider):
 
     PROVIDER_NAME = "Anthropic (Claude)"
     TIER = "paid"
+    FREE_TIER = False
     BASE_URL = "https://api.anthropic.com/v1"
     DEFAULT_MODEL = "claude-sonnet-4-5"
     KEY_URL = "https://console.anthropic.com/settings/keys"
@@ -2516,6 +2588,7 @@ class AnthropicProvider(PresetOpenAIProvider):
 class LMStudioProvider(PresetOpenAIProvider):
     PROVIDER_NAME = "LM Studio (Local, Free)"
     TIER = "local"
+    FREE_TIER = True
     BASE_URL = "http://localhost:1234/v1"
     DEFAULT_MODEL = "local-model"
     KEY_URL = "https://lmstudio.ai/"
@@ -2544,6 +2617,7 @@ class OllamaProvider(AIProvider):
     """
 
     TIER = "local"
+    FREE_TIER = True
 
     def __init__(self, app):
         self.api_model = "llama3.1:8b"
@@ -2567,6 +2641,8 @@ class OllamaProvider(AIProvider):
                 ],
                 allow_custom=True,
                 custom_placeholder="e.g., llama3.2:3b",
+                app=app,
+                free_predicate=self.model_is_free,
             ),
             TextSetting(
                 name="keep_alive",

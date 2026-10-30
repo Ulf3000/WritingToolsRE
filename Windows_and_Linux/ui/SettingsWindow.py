@@ -549,6 +549,28 @@ class SettingsWindow(QtWidgets.QWidget):
             self._on_ui_scale_changed(current_scale)
             content_layout.addLayout(scale_row)
 
+            # Model tier filter: show free, paid, or all models in every
+            # provider's model dropdown.
+            filter_row = QHBoxLayout()
+            filter_row.setSpacing(10)
+            filter_label = QtWidgets.QLabel(_("Model filter"))
+            UIUtils.set_label_role(filter_label, "section")
+            filter_label.setFixedWidth(label_width)
+            filter_row.addWidget(filter_label)
+
+            self.model_tier_dropdown = NoWheelComboBox()
+            self.model_tier_dropdown.addItem(_("All models"), "all")
+            self.model_tier_dropdown.addItem(_("Free only"), "free")
+            self.model_tier_dropdown.addItem(_("Paid only"), "paid")
+            current_filter = self.app.config.get("model_tier_filter", "all")
+            idx = self.model_tier_dropdown.findData(current_filter)
+            self.model_tier_dropdown.setCurrentIndex(idx if idx >= 0 else 0)
+            self.model_tier_dropdown.currentIndexChanged.connect(
+                self._on_model_tier_changed
+            )
+            filter_row.addWidget(self.model_tier_dropdown, 1)
+            content_layout.addLayout(filter_row)
+
         # Provider selection shares its row with the label.
         provider_row = QHBoxLayout()
         provider_row.setSpacing(10)
@@ -643,11 +665,53 @@ class SettingsWindow(QtWidgets.QWidget):
 
     _MIN_HEIGHT = 260
 
+    def _fit_height(self):
+        content = getattr(self, "scroll_content", None)
+        bottom = getattr(self, "bottom_container", None)
+        if content is None or bottom is None:
+            return
+        try:
+            width = self.width() or 560
+            layout = content.layout()
+            content_height = layout.heightForWidth(width) if layout is not None else -1
+            if content_height <= 0:
+                content_height = content.sizeHint().height()
+            total = content_height + bottom.sizeHint().height() + 4
+        except RuntimeError:
+            return
+        screen = self.screen()
+        if screen is None:
+            screen = QtWidgets.QApplication.primaryScreen()
+        available = screen.availableGeometry().height() if screen is not None else 800
+        total = max(260, min(total, int(available * 0.94)))
+        try:
+            self.setFixedHeight(total)
+        except RuntimeError:
+            pass
+
     def _schedule_fit_height(self):
         """Fit the window to its content once the new layout is in place."""
         QtCore.QTimer.singleShot(0, self._fit_height)
 
-    def _fit_height(self):
+    def _on_model_tier_changed(self, _index=None):
+        """Persist the model-tier filter and refresh the provider form."""
+        dropdown = getattr(self, "model_tier_dropdown", None)
+        if dropdown is None:
+            return
+        value = dropdown.currentData()
+        if value is None:
+            return
+        if not isinstance(self.app.config, dict):
+            self.app.config = {}
+        self.app.config["model_tier_filter"] = str(value)
+        # Re-render so the model dropdown reflects the new filter.
+        try:
+            self.init_provider_ui(
+                self._current_provider(), self.provider_container
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        self._schedule_fit_height()
         """
         Resize the window to show the whole form.
 
@@ -732,6 +796,10 @@ class SettingsWindow(QtWidgets.QWidget):
                 self.app.config['ui_scale'] = clamp_ui_scale(
                     self.ui_scale_slider.value() / 100.0
                 )
+            if getattr(self, "model_tier_dropdown", None) is not None:
+                value = self.model_tier_dropdown.currentData()
+                if value is not None:
+                    self.app.config['model_tier_filter'] = str(value)
         else:
             self.app.create_tray_icon()
 
