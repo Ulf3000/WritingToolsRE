@@ -49,20 +49,20 @@ Choose a provider in **Settings → Choose AI Provider**. Switch providers witho
 
 | Provider | Access |
 |---|---|
-| Gemini | Free tier and paid/billing accounts |
-| OpenRouter | Free and paid models |
+| Gemini | Free tier; paid/billing accounts also unlock the Pro models |
+| OpenRouter | Free and paid models (free IDs end in `:free`) |
 | Groq | Free tier |
 | Mistral | Free tier |
 | Cloudflare Workers AI | Free daily allowance |
-| Zhipu GLM | Free tier |
+| Zhipu GLM | Free tier (GLM Flash models) |
 | OpenAI (ChatGPT) | Paid API |
 | Anthropic (Claude) | Paid API |
-| DeepSeek | Paid API (very low prices) |
+| DeepSeek | Paid API, very low prices |
 | xAI (Grok) | Paid API |
-| OpenCode | Pay-as-you-go access to multiple model providers |
+| OpenCode | Pay-as-you-go gateway to OpenAI, Anthropic, Google, DeepSeek, GLM, Kimi and more |
 | LM Studio | Local models |
 | Ollama | Local models |
-| OpenAI Compatible | Any compatible API or self-hosted server (e.g. Together AI, Cerebras, NVIDIA NIM) |
+| OpenAI Compatible | Any OpenAI-compatible endpoint or self-hosted server — e.g. Together AI, Cerebras, NVIDIA NIM, Hugging Face, Cohere, SambaNova |
 
 Model availability changes. In Settings, refresh the selected provider’s model list to see what is currently available. Some providers require an API key; local Ollama and LM Studio can run without one.
 
