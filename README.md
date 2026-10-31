@@ -42,39 +42,27 @@ Press `Ctrl+Space` with no text selected to start a chat. Chat history lasts whi
 
 ## AI providers
 
-<img width="432" height="419" alt="Provider list, sorted by name, with a free/paid hint per provider" src="docs/providers.png" />
+<img width="508" height="544" alt="image" src="https://github.com/user-attachments/assets/2ed97f4d-cc9c-4d36-ba04-58c1daf9e123" />
 
 
-Choose a provider in **Settings → AI Provider**. There is one entry per provider, sorted by name, with the two local ones grouped at the bottom. Switching providers keeps your presets.
+Choose a provider in **Settings → Choose AI Provider**. Switch providers without losing your presets.
 
 | Provider | Access |
 |---|---|
-| Gemini | Free tier; paid/billing accounts also unlock the Pro models |
+| Gemini | Free tier and paid/billing accounts |
+| OpenRouter | Free and paid models |
 | Groq | Free tier |
 | Mistral | Free tier |
 | Cloudflare Workers AI | Free daily allowance |
-| Zhipu GLM | Free tier (GLM Flash models) |
-| OpenRouter | Free and paid models (free IDs end in `:free`) |
+| Zhipu GLM | Free tier |
 | OpenAI (ChatGPT) | Paid API |
 | Anthropic (Claude) | Paid API |
-| DeepSeek | Paid API, very low prices |
+| DeepSeek | Paid API (very low prices) |
 | xAI (Grok) | Paid API |
-| OpenCode | Pay-as-you-go gateway to OpenAI, Anthropic, Google, DeepSeek, GLM, Kimi and more |
-| OpenAI Compatible | Any OpenAI-compatible endpoint or self-hosted server — e.g. Together AI, Cerebras, NVIDIA NIM, Hugging Face, Cohere, SambaNova |
+| OpenCode | Pay-as-you-go access to multiple model providers |
 | LM Studio | Local models |
 | Ollama | Local models |
-
-### Free or paid models
-
-Each provider has a **Model filter** (All / Free / Paid) directly above its model dropdown, so a paid account and a free account can use the same provider without guessing which models are available.
-
-The filter is strict: if a provider has no models in the chosen tier, the list says *“No models match this filter”* rather than offering a model from the other tier. Your configured model is kept while you switch filters and is only replaced when you pick another one.
-
-<img width="560" alt="Settings window with the Model filter above the model list" src="docs/settings.png" />
-
-### Per-provider settings
-
-Every provider keeps its own API key, model and filter. Editing one provider never changes another, and switching providers no longer discards what you typed — nothing is written to `config.json` until you press **Save**. Closing the window without saving leaves the file untouched.
+| OpenAI Compatible | Any compatible API or self-hosted server (e.g. Together AI, Cerebras, NVIDIA NIM) |
 
 Model availability changes. In Settings, refresh the selected provider’s model list to see what is currently available. Some providers require an API key; local Ollama and LM Studio can run without one.
 
@@ -94,9 +82,7 @@ Model availability changes. In Settings, refresh the selected provider’s model
 
 Writing Tools is portable. If you extract it into a protected folder such as `Program Files`, run it as administrator on first launch so it can create its configuration files.
 
-Writing Tools lives in the system tray. **Double-click the tray icon** to open Settings, where you pick a provider, paste the API key and can enable **Start on boot**. On the first start the Settings window opens by itself.
-
-The UI scale can be changed in Settings (70–140 %); the app offers to restart itself so the new scale takes effect.
+Open Writing Tools from the system tray to enable **Start on boot** in Settings.
 
 ## Notes
 
